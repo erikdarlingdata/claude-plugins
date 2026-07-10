@@ -664,7 +664,8 @@ def describe_statement(stmt_el, out, top_n, full_sql=False):
                 continue
             flag = ""
             if compiled is None:
-                flag = "   (no compiled value: not sniffed - local variable, or RECOMPILE)"
+                # Local variables never appear in ParameterList, so this is not one.
+                flag = "   (not sniffed: RECOMPILE, or OPTIMIZE FOR UNKNOWN)"
             elif runtime is not None and compiled != runtime:
                 flag = "   <-- compiled for a different value than it ran with"
             rows.append(

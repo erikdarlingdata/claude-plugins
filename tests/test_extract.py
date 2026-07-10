@@ -241,6 +241,33 @@ class Docs(unittest.TestCase):
         text = self._read("SKILL.md")
         self.assertIn("Do not rely on the query text", text)
 
+    def test_all_three_construct_pairs_are_distinguished(self):
+        # Six constructs, three pairings people conflate. Each needs its own
+        # section, because the model will otherwise assert they are equivalent.
+        text = self._read("references/rewrites.md")
+        for heading in (
+            "## A CTE is not a temp table",
+            "## A table variable is not a lightweight temp table",
+            "## A parameter is not a local variable",
+        ):
+            self.assertIn(heading, text, f"missing section: {heading}")
+
+    def test_local_variables_are_not_described_as_appearing_in_parameterlist(self):
+        text = self._read("references/rewrites.md")
+        self.assertIn("never appear in `ParameterList`", text)
+
+    def test_local_variable_range_predicate_is_not_called_a_density_estimate(self):
+        # Density is the equality fallback. Range predicates get a fixed guess.
+        # dba-days-update.sqlplan proves it: @hkey/@bmax in a range land on 16.4%.
+        text = self._read("references/cardinality.md")
+        self.assertIn("for a range\npredicate, on a fixed guess", text)
+
+    def test_parameter_note_does_not_blame_a_local_variable(self):
+        # Locals never reach ParameterList, so a missing compiled value there
+        # cannot mean "local variable".
+        src = (self.SKILL / "scripts/extract.py").read_text(encoding="utf-8")
+        self.assertNotIn("not sniffed - local variable", src)
+
 
 if __name__ == "__main__":
     if not EXTRACT.exists():

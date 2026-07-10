@@ -218,6 +218,10 @@ Say none of these:
 - **"Table variables live in memory."** They do not. They are materialized in
   tempdb exactly like a `#temp` table. Only a table type declared
   `WITH (MEMORY_OPTIMIZED = ON)` is memory-resident.
+- **"A local variable is just a parameter."** It is not. A parameter's value is
+  sniffed at compile time and the optimizer uses the histogram. A local
+  variable's is not known, so it gets the density vector or a fixed guess.
+  `SET @local = @param` disables sniffing — a trade, not a fix.
 
 ## Recommending a fix
 

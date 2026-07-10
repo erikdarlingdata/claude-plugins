@@ -100,10 +100,12 @@ compiled with and wrong for the value it ran with. Check
 estimate in the usual sense — the histogram was fine — so the fix is different.
 
 **Local variables and `OPTIMIZE FOR UNKNOWN`.** A local variable's value is not
-known at compile time, so the optimizer cannot use the histogram. It falls back on
-the density vector (average rows per distinct value), which gives a stable
-estimate that is often a poor one. `OPTION (RECOMPILE)` lets the optimizer see the
-runtime value and use the histogram instead.
+known at compile time, so the optimizer cannot use the histogram. For equality it
+falls back on the density vector (average rows per distinct value); for a range
+predicate, on a fixed guess. Either way the estimate is stable and often poor.
+`OPTION (RECOMPILE)` lets the optimizer see the runtime value and use the
+histogram instead. A parameter is sniffed and a local variable is not — see
+`rewrites.md`, they are not interchangeable.
 
 **Multi-statement table-valued functions.** Fixed estimate of 1 row before 2014,
 100 rows from 2014 on, regardless of what the function returns. Interleaved

@@ -98,6 +98,43 @@ parallel insert with `TABLOCK`. Table variables are fine for tiny fixed-size set
 where the estimate cannot matter, inside functions where `#temp` is unavailable,
 and when you need the contents to survive a rollback.
 
+## A parameter is not a local variable
+
+They look the same in the query text. The optimizer treats them nothing alike.
+
+**A parameter's value is sniffed at compile time.** The optimizer reads the
+histogram for that specific value and builds the best plan for it. Correct for the
+value that compiled the plan, potentially very wrong for every later execution
+that reuses it. That is parameter sniffing.
+
+**A local variable's value is unknown at compile time.** There is no histogram
+lookup. For an equality predicate the optimizer falls back on the density vector
+(average rows per distinct value). For a range predicate it uses a fixed
+selectivity guess. Either way the estimate is stable and usually poor. This is
+identical to `OPTIMIZE FOR UNKNOWN`.
+
+**`SET @local = @param` deliberately disables sniffing.** It is the most common
+"fix" for a sniffing problem, and it is a trade, not a cure: you swap a plan that
+is excellent for one value and terrible for another for a plan that is mediocre
+for all of them. Sometimes predictability is what you want. Say that you are
+choosing it.
+
+`OPTION (RECOMPILE)` lets the optimizer see the runtime value of either, and use
+the histogram.
+
+**Plan tells:**
+
+- Parameters appear in `<ParameterList>` with `ParameterCompiledValue` and
+  `ParameterRuntimeValue`. When those differ, the plan was compiled for one value
+  and executed with another.
+- Local variables **never appear in `ParameterList`**. If a predicate compares
+  against a value you cannot find anywhere in the plan, it is a local variable.
+- A parameter with a runtime value but no compiled value means the plan was not
+  compiled for a sniffed value — `OPTION (RECOMPILE)` or `OPTIMIZE FOR UNKNOWN`.
+- An estimate landing on a round fraction of `TableCardinality` beside a predicate
+  whose value you cannot see is the fingerprint of a local variable in a range
+  predicate.
+
 ## Fixes that are not fixes
 
 **Casting the column to fix an implicit conversion.** `CAST(t.col AS nvarchar(40)) = @p`
