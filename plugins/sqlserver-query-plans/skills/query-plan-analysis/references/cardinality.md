@@ -32,34 +32,49 @@ the outer side of the join, not at the operator you are looking at.
 
 ## The optimizer's default guesses
 
-When statistics are missing or unusable, the optimizer applies fixed selectivity
-guesses. Estimates that land on these fractions of `TableCardinality` are a
-fingerprint: they mean the optimizer had nothing to work with, and the fix is to
-give it information, not to hint the query.
+When statistics are missing or unusable, the optimizer stops estimating and starts
+guessing: it applies a fixed selectivity to the table's cardinality instead of
+reading a histogram.
 
-| Guess | Selectivity | Typical trigger |
-|---|---|---|
-| Equality | 30% | `col = @var` with no usable statistic; table variable |
-| Inequality | 10% | `col > @var`, `col < @var` |
-| `LIKE` / `BETWEEN` | 9% | `col LIKE @pattern` |
-| Compound predicate | ~16.4% | two filters combined under the new CE |
-| Multiple inequalities | 1% | `col > @a AND col < @b` |
+**Do not memorize the fractions.** They differ between the default and legacy
+cardinality estimators (`CardinalityEstimationModelVersion`), and they differ by
+predicate type. Quoting a specific percentage as though it were universal is a
+good way to be confidently wrong.
 
-The new cardinality estimator (`CardinalityEstimationModelVersion` 120 and
-above) also uses *exponential backoff* when combining predicates, rather than the
-legacy CE's independence assumption. Two predicates each 10% selective estimate
-at roughly 3.2% under the old model and roughly 5.6% under the new one. Neither
-is right when the columns are correlated.
+What matters is recognizing the shape. An estimate that is a suspiciously round
+fraction of `TableCardinality` — a clean 30%, 10%, 9%, 1% — is almost always a
+guess rather than a measurement. `scripts/extract.py` flags estimates that land on
+one of these known fixed fractions, without claiming which guess it is.
 
-`scripts/extract.py` flags estimates that match these fingerprints.
+The consequence is the same whichever fraction it landed on: the optimizer had
+nothing to work with. The fix is to give it information, not to hint the query.
+
+The default CE also combines predicates using *exponential backoff* rather than the
+legacy CE's assumption that predicates are independent. Both are wrong when the
+columns are correlated; they are wrong by different amounts.
 
 ## Common causes, in rough order of frequency
 
-**Table variables.** Before SQL Server 2019 (or under compatibility level below
-150), a table variable always estimates 1 row regardless of contents, because it
-has no statistics. Deferred compilation in 2019+ fixes the *initial* estimate but
-not subsequent modifications. A table variable feeding a nested loop join is the
-classic cause of a plan that works on a laptop and dies in production.
+**Table variables.** A table variable has no column statistics, on any version,
+**even when it is indexed**. Predicate selectivity against one is therefore always
+a guess.
+
+Its *cardinality* estimate depends on the version:
+
+- Without table variable deferred compilation (before SQL Server 2019, or below
+  compatibility level 150), the estimate is a fixed one row regardless of how many
+  rows it holds.
+- With deferred compilation (2019+, compat 150), the optimizer uses the table
+  variable's real cardinality. But inside a **stored procedure**, that cardinality
+  is sniffed at first compile and reused by every later execution of the cached
+  plan — exactly like parameter sniffing. It is right for the call that compiled
+  the plan and can be badly wrong for the ones that follow.
+
+`OPTION (RECOMPILE)` on the referencing statement gives an accurate cardinality on
+any version. It still does not give you column statistics.
+
+A table variable feeding a nested loop join is the classic cause of a plan that
+works on a laptop and dies in production. See `rewrites.md`.
 
 **Implicit conversion on a predicate.** If the column's type must be converted to
 match the literal or parameter, the optimizer cannot use the histogram and falls
@@ -85,9 +100,10 @@ compiled with and wrong for the value it ran with. Check
 estimate in the usual sense — the histogram was fine — so the fix is different.
 
 **Local variables and `OPTIMIZE FOR UNKNOWN`.** A local variable's value is not
-known at compile time, so the optimizer uses the density vector (average rows per
-distinct value) rather than the histogram. This produces a stable, mediocre
-estimate rather than a good one.
+known at compile time, so the optimizer cannot use the histogram. It falls back on
+the density vector (average rows per distinct value), which gives a stable
+estimate that is often a poor one. `OPTION (RECOMPILE)` lets the optimizer see the
+runtime value and use the histogram instead.
 
 **Multi-statement table-valued functions.** Fixed estimate of 1 row before 2014,
 100 rows from 2014 on, regardless of what the function returns. Interleaved
@@ -123,5 +139,11 @@ In order of preference:
 3. Restructure the query so the bad estimate does not matter. Materializing an
    intermediate result into a `#temp` table gives the optimizer real statistics
    at the cost of a write.
+
+   **Only a `#temp` table does this.** A CTE is not materialized — it is expanded
+   into the outer query and re-executed once per reference, so it produces no
+   intermediate result and no statistics. A table variable is materialized but
+   carries no column statistics. Neither substitutes for a `#temp` table here.
+   See `rewrites.md`.
 4. Only then, hints. And when you use one, say what estimate it is compensating
    for.

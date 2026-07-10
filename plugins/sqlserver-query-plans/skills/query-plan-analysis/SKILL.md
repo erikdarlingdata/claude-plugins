@@ -137,10 +137,11 @@ is the most common way to be loudly wrong about a plan. The digest does this
 division for you.
 
 Large skew in either direction is worth investigating; see
-`references/cardinality.md`, which also covers the optimizer's default guess
-selectivities. When an estimate lands on exactly 30% of table cardinality, the
-optimizer had no useful statistics and guessed — that is a fingerprint, and it
-points at a different fix than a merely stale histogram.
+`references/cardinality.md`. When an estimate lands on a suspiciously round
+fraction of table cardinality, the optimizer had no useful statistics and guessed.
+That is a fingerprint, and it points at a different fix than a merely stale
+histogram. Do not name which guess it was — the fractions vary by cardinality
+estimator version, and asserting one is a good way to be confidently wrong.
 
 ## Step 5: check for skew before you trust a parallel plan
 
@@ -203,6 +204,40 @@ Say none of these:
 - **"This query needs `OPTION (RECOMPILE)` / `MAXDOP 1` / a hint."** Hints
   suppress symptoms. Reach for them after you understand the cause, and say
   what the cause was.
+- **"Use a CTE instead / a CTE is basically a temp table."** It is not. A
+  non-recursive CTE is not materialized; it is expanded into the outer query and
+  re-executed once per reference. See `references/rewrites.md`.
+- **"A table variable is a lighter temp table."** It is not. Table variables
+  never carry column statistics, and statements that modify one are compiled
+  fully serial.
+- **"Table variables live in memory."** They do not. They are materialized in
+  tempdb exactly like a `#temp` table. Only a table type declared
+  `WITH (MEMORY_OPTIMIZED = ON)` is memory-resident.
+
+## Recommending a fix
+
+Reading the plan correctly and then suggesting a bad rewrite wastes the entire
+analysis. Two hard rules.
+
+**Never assert that two T-SQL constructs are equivalent.** `#temp` tables, table
+variables, CTEs, derived tables, views, and inline table-valued functions are six
+different things. Their similar syntax hides differences of several orders of
+magnitude. Claiming a CTE and a `#temp` table are interchangeable is the most
+common way to sound expert and be wrong, and the person you are talking to may
+not know enough to correct you.
+
+**When you propose a rewrite, name the mechanism.** Say what changes in the plan
+and why, in terms of what you just read, citing node ids from the plan in front
+of you. "Materialize the CTE into a `#temp` table; it is referenced five times,
+so its defining query runs five times, which is why the digest reports five
+separate scans of `dbo.Posts`" is a recommendation. "Try a temp table" is a guess
+wearing a recommendation's clothes.
+
+If you cannot say what changes in the plan, say that you do not know. Read
+`references/rewrites.md` before recommending any rewrite. It covers what CTEs,
+table variables, and temp tables actually do, plus the fixes that are not fixes:
+casting the column to defeat an implicit conversion, `NOLOCK`, `SELECT DISTINCT`
+over a fan-out, and pasting the missing-index request as DDL.
 
 ## Writing the answer
 
@@ -230,5 +265,6 @@ answer. Inventing a bottleneck from cost percentages is not.
 | `references/warnings.md` | The plan carries any warning |
 | `references/parallelism.md` | The plan is parallel |
 | `references/indexes.md` | You are about to recommend an index |
+| `references/rewrites.md` | **Before recommending any query rewrite** |
 | `references/operators.md` | You need to explain a specific operator |
 | `references/extracting-without-python.md` | Python is unavailable |

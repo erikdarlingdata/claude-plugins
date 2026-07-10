@@ -2,7 +2,7 @@
   "name": "sqlserver-query-plans",
   "displayName": "SQL Server Query Plans",
   "description": "Read a SQL Server execution plan (.sqlplan / showplan XML) and explain what is actually slow, and why. Prevents the standard wrong conclusions: reading cost percentages as measurements, ranking operators by cumulative time, comparing estimated to actual rows without dividing by executions, calling scans defects, and pasting missing-index DDL verbatim.",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "author": {
     "name": "Erik Darling",
     "email": "erik@erikdarling.com",

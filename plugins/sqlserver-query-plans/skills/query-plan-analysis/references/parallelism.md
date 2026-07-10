@@ -64,6 +64,12 @@ builds, intra-query parallel deadlocks.
 - `TSQLUserDefinedFunctionsNotParallelizable` — a scalar UDF anywhere in the
   query forced the entire plan serial.
 - `CouldNotGenerateValidParallelPlan` — **also very commonly a scalar UDF.**
+- `TableVariableTransactionsDoNotSupportParallelNestedTransaction` — the
+  statement writes to a table variable, so the **whole statement** is serial,
+  including the `SELECT` inside an `INSERT ... SELECT`. Reading a table variable
+  without modifying it can still go parallel. See `rewrites.md`.
+
+`DegreeOfParallelism` of 0 and of 1 both mean the statement ran on one thread.
 
 Do not treat `TSQLUserDefinedFunctionsNotParallelizable` as the only UDF tell.
 Real plans containing a serial-forcing scalar UDF frequently report

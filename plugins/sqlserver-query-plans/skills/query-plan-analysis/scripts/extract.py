@@ -382,6 +382,8 @@ def parse_warnings(parent_el):
 
     for attr, text in WARN_FLAGS:
         if w.get(attr) in ("1", "true"):
+            if attr == "NoJoinPredicate":
+                text += "  (frequently benign - see references/warnings.md before reporting)"
             out.append(text)
 
     for c in w.findall(NS + "PlanAffectingConvert"):
@@ -442,12 +444,16 @@ def parse_warnings(parent_el):
 # Cardinality estimator default-guess fingerprints
 # ---------------------------------------------------------------------------
 
-CE_GUESSES = [
-    (0.29, 0.31, "30% equality guess"),
-    (0.098, 0.102, "10% inequality guess"),
-    (0.088, 0.092, "9% LIKE/BETWEEN guess"),
-    (0.155, 0.175, "~16.4% compound predicate guess"),
-    (0.009, 0.011, "1% multi-inequality guess"),
+# Selectivities the optimizer falls back on when it has no usable statistics.
+# Which predicate produces which fraction varies by cardinality estimator version,
+# so report the fingerprint and do NOT name the guess. Naming it is how you end up
+# telling someone "30% equality guess" about an inequality predicate.
+CE_GUESS_BANDS = [
+    (0.29, 0.31),
+    (0.155, 0.175),
+    (0.098, 0.102),
+    (0.088, 0.092),
+    (0.009, 0.011),
 ]
 
 
@@ -455,9 +461,12 @@ def detect_ce_guess(est_rows, table_cardinality):
     if table_cardinality <= 0:
         return None
     sel = est_rows / table_cardinality
-    for lo, hi, name in CE_GUESSES:
+    for lo, hi in CE_GUESS_BANDS:
         if lo <= sel <= hi:
-            return f"{name} ({sel * 100:.1f}% of {table_cardinality:,.0f})"
+            return (
+                f"is {sel * 100:.1f}% of table cardinality ({table_cardinality:,.0f}), "
+                f"a known fixed-guess fraction"
+            )
     return None
 
 
@@ -545,8 +554,10 @@ def describe_statement(stmt_el, out, top_n, full_sql=False):
         out.append(f"  Early abort reason    : {early_abort}")
     out.append(f"  Estimated subtree cost: {num(stmt_el, 'StatementSubTreeCost'):,.2f}  (ALWAYS an estimate)")
     dop = qp.get("DegreeOfParallelism")
-    if dop:
-        out.append(f"  Degree of parallelism : {dop}")
+    if dop is not None:
+        # DOP 0 and DOP 1 both mean the statement ran on one thread.
+        note = "  (serial)" if dop in ("0", "1") else ""
+        out.append(f"  Degree of parallelism : {dop}{note}")
     npr = qp.get("NonParallelPlanReason")
     if npr:
         out.append(f"  Non-parallel reason   : {npr}")
@@ -695,6 +706,33 @@ def describe_statement(stmt_el, out, top_n, full_sql=False):
                 f"(est {fmt_rows(n.est_rows)} rows)"
                 + (f"  {objs[0]}" if objs else "")
             )
+        out.append("")
+
+    # --- The same table, touched more than once ---------------------------
+    # A non-recursive CTE, view, or inline TVF is expanded once per reference,
+    # so repeated access to one object is how CTE re-execution shows up in a plan.
+    # Self-joins look the same, hence the neutral wording.
+    touches = {}
+    for n in nodes:
+        if "Scan" not in n.physical and "Seek" not in n.physical:
+            continue
+        for obj in dict.fromkeys(node_objects(n)):
+            base = obj.split(" AS ")[0]
+            touches.setdefault(base, []).append(n)
+    repeated = {o: ns for o, ns in touches.items() if len(ns) > 1}
+    if repeated:
+        out.append("-- SAME OBJECT ACCESSED MORE THAN ONCE ----------------------")
+        for obj, ns in sorted(repeated.items(), key=lambda x: -len(x[1])):
+            ids = ", ".join(n.node_id for n in ns)
+            line = f"  {obj}: {len(ns)} accesses (nodes {ids})"
+            if has_actual:
+                total = sum(own_elapsed_ms(n) for n in ns)
+                if total > 0:
+                    line += f" totalling {total:,.0f} ms self elapsed"
+            out.append(line)
+        out.append("  A non-recursive CTE, view, or inline TVF is expanded once per")
+        out.append("  reference, so N references means N accesses. A self-join looks the")
+        out.append("  same. Check the query text before concluding. See references/rewrites.md.")
         out.append("")
 
     # --- Plan shape --------------------------------------------------------
