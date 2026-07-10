@@ -1,0 +1,21 @@
+{
+  "name": "erikdarling",
+  "description": "Claude Code plugins from Erik Darling Data",
+  "owner": {
+    "name": "Erik Darling",
+    "email": "erik@erikdarling.com"
+  },
+  "plugins": [
+    {
+      "name": "query-plan-analysis",
+      "source": "./plugins/query-plan-analysis",
+      "description": "Read a SQL Server execution plan and explain what is actually slow, without the standard wrong conclusions.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Erik Darling"
+      },
+      "category": "database",
+      "tags": ["sql-server", "query-plan", "performance", "tsql", "showplan"]
+    }
+  ]
+}
