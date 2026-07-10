@@ -342,6 +342,17 @@ class Docs(unittest.TestCase):
         text = self._read("SKILL.md")
         self.assertIn("Do not rely on the query text", text)
 
+    def test_max_type_grant_claim_is_measured_not_asserted(self):
+        # The (max) row-size behavior is not documented by Microsoft. It was
+        # asserted from plausibility once ("half of 2 GB would be absurd"), which
+        # is the same reasoning that produced the mislabeled CE guess table.
+        # It now carries the measurement and says it is undocumented.
+        text = self._read("references/warnings.md")
+        self.assertIn("`AvgRowSize`", text)
+        self.assertIn("4035", text)  # the measured (max) figure
+        self.assertIn("Neither behavior is documented by Microsoft", text)
+        self.assertNotIn("would be absurd", text)
+
     def test_pagelatch_and_pageiolatch_are_distinguished(self):
         # Confusing in-memory page contention with physical I/O sends the reader
         # after storage when the problem is contention, or the reverse.

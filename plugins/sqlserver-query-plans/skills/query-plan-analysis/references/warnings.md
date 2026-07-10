@@ -96,15 +96,34 @@ run fine while starving everything else. Look at
 above 50x is severe.
 
 Grants are sized from estimated rows *and* estimated row size, and the row size is
-a guess from the column's **declared** width, not its actual contents.
+a guess from the column's **declared** width, not its actual contents. The
+optimizer's figure is visible in the plan as `AvgRowSize` on each operator.
 
-For a bounded variable-length column the optimizer assumes **half the declared
-maximum**. A `VARCHAR(8000)` column that always holds 20 characters still reserves
+For a **bounded** variable-length column the optimizer assumes **half the declared
+maximum**. A `VARCHAR(8000)` that always holds 20 characters still reserves about
 4000 bytes per row. Widening a column you never fill costs memory on every query
 that selects it.
 
-`VARCHAR(MAX)` / `NVARCHAR(MAX)` and the LOB types do **not** follow the half rule
-— half of 2 GB would be absurd. They get a separate fixed assumption instead.
+`VARCHAR(MAX)` and `NVARCHAR(MAX)` do **not** follow the half rule. They get a flat
+assumption of roughly 4 KB per row, and `NVARCHAR(MAX)` is not doubled for its two
+bytes per character — both land on the same figure.
+
+Measured, sorting one column at a time, identical on SQL Server 2019 and 2022:
+
+| Column | `AvgRowSize` |
+|---|---|
+| `int` | 11 |
+| `varchar(1000)` | 511 |
+| `varchar(8000)` | 4011 |
+| `nvarchar(4000)` | 4011 |
+| `varchar(max)` | 4035 |
+| `nvarchar(max)` | 4035 |
+
+Subtract 7 bytes of row overhead and the bounded columns land on half their
+declared width. The `(max)` columns land on a constant.
+
+Neither behavior is documented by Microsoft. If it matters to your argument, read
+`AvgRowSize` out of the plan in front of you rather than quoting this table.
 
 Either way, "select fewer columns" is real advice and not a platitude.
 
