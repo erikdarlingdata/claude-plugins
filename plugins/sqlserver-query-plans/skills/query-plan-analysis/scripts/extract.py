@@ -27,9 +27,14 @@ EXCHANGE_LOGICAL = {"Gather Streams", "Distribute Streams", "Repartition Streams
 # it -- object names, predicates, wait types, SQL text -- is untrusted, and XML
 # attribute normalization preserves character references, so `&#xA;` embeds a real
 # newline. Left alone, a hostile plan can forge this tool's own section headers
-# inside the digest an agent is reading. Strip C0 controls and DEL from every line.
+# inside the digest an agent is reading. Strip C0 controls, DEL, and the C1 block
+# (0x80-0x9F): 0x85 is a next-line control that some terminals treat as a break --
+# another forging vector -- and characters like 0x90 crash a cp1252 Windows console
+# at print() time.
 _CONTROL_CHARS = {c: None for c in range(0x20)}
 _CONTROL_CHARS[0x7F] = None
+for _c in range(0x80, 0xA0):
+    _CONTROL_CHARS[_c] = None
 
 # Real plans are far smaller. A 414 MB plan measured 3.5 GB peak RSS (8.5x), so an
 # unbounded read is a local denial of service on a file someone sent you.
@@ -1174,6 +1179,14 @@ def _describe_matching_nodes(stmts, node_id, detail):
 
 
 def main():
+    # A default Windows console is cp1252. A plan can legitimately contain a table
+    # name in a script that code page cannot encode (Cyrillic, CJK), which crashes
+    # print() with UnicodeEncodeError. Force UTF-8 output where the runtime allows.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
     ap = argparse.ArgumentParser(description="Flatten a .sqlplan into a text digest.")
     ap.add_argument("plan", help="path to a .sqlplan / showplan XML file")
     ap.add_argument("--top", type=int, default=10, help="rows to show in ranked sections")

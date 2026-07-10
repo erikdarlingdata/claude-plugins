@@ -268,6 +268,37 @@ class Hostile(unittest.TestCase):
             self.assertNotIn("Traceback", r.stderr)
             self.assertIn("too deeply nested", r.stderr)
 
+    def test_c1_control_in_object_name_does_not_crash_a_legacy_console(self):
+        # 0x90 is a C1 control. clean() stripped C0 and 0x7F but not the C1 block,
+        # so it reached print() and crashed a cp1252 Windows console with
+        # UnicodeEncodeError. Reported by an external contributor. 0x85 (NEL) in
+        # the same block is also a terminal line-break, so stripping C1 closes a
+        # forging vector too.
+        name = "bad" + chr(0x90) + "na" + chr(0x85) + "me"
+        body = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">'
+            "<BatchSequence><Batch><Statements>"
+            '<StmtSimple StatementId="1" StatementType="SELECT" StatementText="x"><QueryPlan>'
+            '<RelOp NodeId="0" PhysicalOp="Table Scan" LogicalOp="Table Scan" '
+            'EstimateRows="1" EstimatedTotalSubtreeCost="1"><TableScan>'
+            f'<Object Database="[d]" Schema="[s]" Table="[{name}]"/>'
+            "</TableScan></RelOp></QueryPlan></StmtSimple>"
+            "</Statements></Batch></BatchSequence></ShowPlanXML>"
+        )
+        import tempfile
+        d = pathlib.Path(tempfile.mkdtemp())
+        p = d / "c1.sqlplan"
+        p.write_text(body, encoding="utf-8")
+        env = dict(os.environ, PYTHONIOENCODING="cp1252")
+        r = subprocess.run(
+            [sys.executable, str(EXTRACT), str(p)], capture_output=True, text=True, env=env
+        )
+        self.assertEqual(r.returncode, 0, f"crashed on a cp1252 console: {r.stderr[-200:]}")
+        self.assertNotIn("UnicodeEncodeError", r.stderr)
+        for line in r.stdout.splitlines():
+            self.assertFalse(line.strip().startswith("me"), "C1 NEL broke the line")
+
 
 class Robustness(unittest.TestCase):
     def test_utf16_plan_parses(self):
