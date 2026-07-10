@@ -1,9 +1,8 @@
 {
   "name": "erikdarling",
-  "description": "Claude Code plugins from Erik Darling Data",
+  "description": "Claude Code plugins from Darling Data - https://erikdarling.com",
   "owner": {
-    "name": "Erik Darling",
-    "email": "erik@erikdarling.com"
+    "name": "Darling Data"
   },
   "renames": {
     "query-plan-analysis": "sqlserver-query-plans"
@@ -11,13 +10,30 @@
   "plugins": [
     {
       "name": "sqlserver-query-plans",
+      "displayName": "SQL Server Query Plans",
       "source": "./plugins/sqlserver-query-plans",
       "description": "Read a SQL Server execution plan and explain what is actually slow, and why. Prevents the standard wrong conclusions: cost percentages read as measurements, operators ranked by cumulative time, estimated rows compared to actual without dividing by executions, and missing-index DDL pasted verbatim.",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": {
-        "name": "Erik Darling"
+        "name": "Erik Darling",
+        "url": "https://erikdarling.com"
       },
+      "homepage": "https://erikdarling.com",
+      "repository": "https://github.com/erikdarlingdata/claude-plugins",
+      "license": "MIT",
       "category": "database",
+      "keywords": [
+        "sql-server",
+        "mssql",
+        "query-plan",
+        "execution-plan",
+        "showplan",
+        "sqlplan",
+        "performance",
+        "query-tuning",
+        "tsql",
+        "dba"
+      ],
       "tags": [
         "sql-server",
         "mssql",

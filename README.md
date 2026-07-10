@@ -1,6 +1,7 @@
-# Erik Darling Data — Claude Code plugins
+# Darling Data — Claude Code plugins
 
-A [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces).
+A [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces)
+from [Darling Data](https://erikdarling.com).
 
 ```
 /plugin marketplace add erikdarlingdata/claude-plugins
@@ -58,6 +59,11 @@ execution, and recognizes the optimizer's default-guess selectivity fingerprints
 
 Requires Python 3 (standard library only). Without it, the skill degrades to a
 documented `grep`-based fallback and says plainly what it cannot determine.
+
+## About
+
+Built by [Erik Darling](https://erikdarling.com) at Darling Data. SQL Server
+consulting, training, and free tools: **https://erikdarling.com**
 
 ## License
 
