@@ -129,7 +129,14 @@ the histogram.
 | `ParameterCompiledValue` and `ParameterRuntimeValue` both present | The parameter was sniffed. If they **differ**, the plan was compiled for one value and executed with another. |
 | `ParameterRuntimeValue` present, **no** `ParameterCompiledValue` | The optimizer deliberately did not sniff: `OPTIMIZE FOR UNKNOWN`, `OPTIMIZE FOR (@p UNKNOWN)`, trace flag 4136, or database-scoped `PARAMETER_SNIFFING = OFF`. |
 | `ParameterCompiledValue` present, **no** `ParameterRuntimeValue` | An estimated or cached plan. It never executed, so there is no runtime value. |
-| **No `<ParameterList>` entry at all**, but the value appears as a literal in the predicate | `OPTION (RECOMPILE)`. The parameter was embedded as a constant, so it is not a parameter any more. |
+| **No `<ParameterList>` entry at all**, but the value appears as a literal in the predicate | Statement-level `OPTION (RECOMPILE)`. The parameter was embedded as a constant, so it is not a parameter any more. |
+
+**`WITH RECOMPILE` on the procedure is not the same thing.** It recompiles the
+plan on every execution but does **not** embed parameters. The parameter stays in
+`ParameterList` with a compiled value, so a `WITH RECOMPILE` procedure is
+indistinguishable in the plan from a plain sniffed one. Only the statement-level
+`OPTION (RECOMPILE)` hint gets the embedding optimization. Do not read a normal
+`ParameterList` as proof that nothing was recompiled.
 
 Local variables **never appear in `ParameterList`**, and neither do embedded
 literals. The way to tell them apart is the predicate: a local variable shows as

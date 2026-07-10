@@ -357,6 +357,14 @@ class Docs(unittest.TestCase):
         text = self._read("references/rewrites.md")
         self.assertIn("never appear in `ParameterList`", text)
 
+    def test_statement_and_procedure_recompile_are_distinguished(self):
+        # Verified on 2019/2022: OPTION (RECOMPILE) embeds the parameter as a
+        # literal and it leaves ParameterList. WITH RECOMPILE does not embed, so
+        # the plan looks exactly like a plain sniffed procedure.
+        text = self._read("references/rewrites.md")
+        self.assertIn("`WITH RECOMPILE` on the procedure is not the same thing", text)
+        self.assertIn("does **not** embed parameters", text)
+
     def test_local_variable_range_predicate_is_not_called_a_density_estimate(self):
         # Density is the equality fallback. Range predicates get a fixed guess.
         # dba-days-update.sqlplan proves it: @hkey/@bmax in a range land on 16.4%.
