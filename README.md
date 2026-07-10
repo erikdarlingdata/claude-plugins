@@ -60,6 +60,24 @@ execution, and recognizes the optimizer's default-guess selectivity fingerprints
 Requires Python 3 (standard library only). Without it, the skill degrades to a
 documented `grep`-based fallback and says plainly what it cannot determine.
 
+## GitHub Copilot CLI
+
+This plugin also works in [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli/),
+which reads the same `SKILL.md` and `plugin.json` format.
+
+```
+copilot plugin marketplace add erikdarlingdata/claude-plugins
+copilot plugin install sqlserver-query-plans@erikdarling
+```
+
+Or add just the skill, without the marketplace:
+
+```
+/skills add ./plugins/sqlserver-query-plans/skills/query-plan-analysis
+```
+
+As in Claude Code, the skill is model-invoked: point Copilot at a `.sqlplan` and ask.
+
 ## About
 
 Built by [Erik Darling](https://erikdarling.com) at Darling Data. SQL Server
