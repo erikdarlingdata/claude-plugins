@@ -55,6 +55,11 @@ so you will often not need it.
 
 If Python is genuinely unavailable, see `references/extracting-without-python.md`.
 
+Do not rely on the query text. Plans captured from the plan cache or Query Store
+often carry no statement text, and the `StatementText` inside a plan can be
+truncated by SQL Server. Reason from the plan. Use the text, when you have it, to
+confirm what the plan already showed you.
+
 ## Step 1: is this an actual plan or an estimated plan?
 
 The digest says so explicitly. It decides what you are allowed to conclude.
@@ -233,11 +238,14 @@ so its defining query runs five times, which is why the digest reports five
 separate scans of `dbo.Posts`" is a recommendation. "Try a temp table" is a guess
 wearing a recommendation's clothes.
 
-If you cannot say what changes in the plan, say that you do not know. Read
-`references/rewrites.md` before recommending any rewrite. It covers what CTEs,
-table variables, and temp tables actually do, plus the fixes that are not fixes:
-casting the column to defeat an implicit conversion, `NOLOCK`, `SELECT DISTINCT`
-over a fan-out, and pasting the missing-index request as DDL.
+If you cannot say what changes in the plan, say that you do not know. And do not
+reach for the query text to make the case — you may not have it, and it may be
+truncated. The plan is the evidence.
+
+Read `references/rewrites.md` before recommending any rewrite. It covers what
+CTEs, table variables, and temp tables actually do, plus the fixes that are not
+fixes: casting the column to defeat an implicit conversion, `NOLOCK`,
+`SELECT DISTINCT` over a fan-out, and pasting the missing-index request as DDL.
 
 ## Writing the answer
 

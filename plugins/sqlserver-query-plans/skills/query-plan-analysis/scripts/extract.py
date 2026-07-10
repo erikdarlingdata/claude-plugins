@@ -519,13 +519,17 @@ def statement_text(stmt_el):
 def describe_statement(stmt_el, out, top_n, full_sql=False):
     text = statement_text(stmt_el)
     stmt_id = stmt_el.get("StatementId", "?")
-    if not full_sql and len(text) > 1500:
-        text = text[:1500] + f" ... [truncated; see --sql {stmt_id} for the full text]"
 
     out.append("=" * 78)
     out.append(f"STATEMENT {stmt_id}  [{stmt_el.get('StatementType', '?')}]")
     out.append("=" * 78)
-    out.append(f"  {text}")
+    if not text:
+        # Plans from the cache or Query Store frequently carry no statement text.
+        out.append("  (no statement text in this plan - reason from the plan alone)")
+    else:
+        if not full_sql and len(text) > 1500:
+            text = text[:1500] + f" ... [see --sql {stmt_id} for the rest]"
+        out.append(f"  {text}")
     out.append("")
 
     qp = stmt_el.find(NS + "QueryPlan")
@@ -732,7 +736,7 @@ def describe_statement(stmt_el, out, top_n, full_sql=False):
             out.append(line)
         out.append("  A non-recursive CTE, view, or inline TVF is expanded once per")
         out.append("  reference, so N references means N accesses. A self-join looks the")
-        out.append("  same. Check the query text before concluding. See references/rewrites.md.")
+        out.append("  same. See references/rewrites.md.")
         out.append("")
 
     # --- Plan shape --------------------------------------------------------
