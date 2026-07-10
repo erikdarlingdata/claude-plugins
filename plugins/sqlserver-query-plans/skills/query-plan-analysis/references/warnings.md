@@ -95,18 +95,14 @@ run fine while starving everything else. Look at
 `GrantedMemory / MaxUsedMemory` — a ratio above about 10x deserves attention, and
 above 50x is severe.
 
-Grants are sized from estimated rows *and* estimated row size, and the row size is
-a guess from the column's **declared** width, not its actual contents. The
-optimizer's figure is visible in the plan as `AvgRowSize` on each operator.
+Grants are sized from estimated rows *and* estimated row size. The row size comes
+from the column's **declared type**, never from what the column actually holds.
+The optimizer's figure appears in the plan as `AvgRowSize` on each operator.
 
 For a **bounded** variable-length column the optimizer assumes **half the declared
-maximum**. A `VARCHAR(8000)` that always holds 20 characters still reserves about
-4000 bytes per row. Widening a column you never fill costs memory on every query
-that selects it.
-
-`VARCHAR(MAX)` and `NVARCHAR(MAX)` do **not** follow the half rule. They get a flat
-assumption of roughly 4 KB per row, and `NVARCHAR(MAX)` is not doubled for its two
-bytes per character — both land on the same figure.
+maximum**. For `VARCHAR(MAX)` and `NVARCHAR(MAX)` it assumes a **flat ~4 KB**, and
+`NVARCHAR(MAX)` is not doubled for its two bytes per character — both land on the
+same figure.
 
 Measured, sorting one column at a time, identical on SQL Server 2019 and 2022:
 
@@ -119,11 +115,31 @@ Measured, sorting one column at a time, identical on SQL Server 2019 and 2022:
 | `varchar(max)` | 4035 |
 | `nvarchar(max)` | 4035 |
 
-Subtract 7 bytes of row overhead and the bounded columns land on half their
-declared width. The `(max)` columns land on a constant.
+Subtract 7 bytes of row overhead: the bounded columns land on half their declared
+width, and the `(max)` columns land on a constant.
 
-Neither behavior is documented by Microsoft. If it matters to your argument, read
-`AvgRowSize` out of the plan in front of you rather than quoting this table.
+**The estimate does not move with the data, and statistics do not change it.** The
+same table filled with 3-byte values and with values at 8,000 / 20,000 / 32,000
+bytes produces identical `AvgRowSize` on both versions, even though the `(max)`
+values are stored off-row. Creating statistics on the column changes nothing.
+
+So the error runs in **both** directions, and only one of them is the famous one:
+
+- **Over-declared, under-filled.** A `VARCHAR(8000)` holding 20 characters still
+  reserves ~4000 bytes per row. The grant is far too large, the query hoards
+  memory, and everything else on the instance waits behind it. This is the
+  "oversized strings" story.
+- **Filled, or `(max)`.** A `VARCHAR(8000)` actually holding 8,000 bytes is still
+  estimated at 4,000 — half of what it needs. A `VARCHAR(MAX)` holding 20,000
+  bytes, or an `NVARCHAR(MAX)` holding 32,000, is still estimated at ~4 KB. The
+  grant is several times **too small**, and the sort or hash spills.
+
+That second case is worth remembering when a plan spills despite an estimate that
+looks correct. Check the row counts, and then check whether the query is dragging
+wide or LOB columns through a sort.
+
+Neither behavior is documented by Microsoft. Read `AvgRowSize` out of the plan in
+front of you rather than quoting this table.
 
 Either way, "select fewer columns" is real advice and not a platitude.
 

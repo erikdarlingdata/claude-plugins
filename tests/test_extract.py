@@ -353,6 +353,17 @@ class Docs(unittest.TestCase):
         self.assertIn("Neither behavior is documented by Microsoft", text)
         self.assertNotIn("would be absurd", text)
 
+    def test_grant_estimate_error_is_described_in_both_directions(self):
+        # AvgRowSize is metadata-driven: measured identical for 3-byte values and
+        # for 8,000 / 20,000 / 32,000-byte values, with and without statistics.
+        # So a fully-filled or (max) column is UNDER-granted and spills. Only
+        # describing the over-granted case tells half the story.
+        text = self._read("references/warnings.md")
+        self.assertIn("does not move with the data", text)
+        self.assertIn("statistics do not change it", text)
+        self.assertIn("too small", text)
+        self.assertIn("spills", text)
+
     def test_pagelatch_and_pageiolatch_are_distinguished(self):
         # Confusing in-memory page contention with physical I/O sends the reader
         # after storage when the problem is contention, or the reverse.
