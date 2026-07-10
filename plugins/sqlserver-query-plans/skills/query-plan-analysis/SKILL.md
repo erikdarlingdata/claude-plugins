@@ -277,6 +277,11 @@ answer. Inventing a bottleneck from cost percentages is not.
 
 ## Reference files
 
+These paths are relative to this skill's directory, the same one that holds
+`scripts/`. Resolve them the same way you resolve the extractor — against this
+skill's root, not your working directory — and `Read` the file when its row
+applies.
+
 | File | Read it when |
 |---|---|
 | `references/timing.md` | Before making any claim about where time went |

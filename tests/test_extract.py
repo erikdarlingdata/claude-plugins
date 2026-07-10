@@ -342,6 +342,16 @@ class Docs(unittest.TestCase):
         text = self._read("SKILL.md")
         self.assertIn("Do not rely on the query text", text)
 
+    def test_reference_paths_carry_resolution_guidance(self):
+        # Step 0 says the skill dir cannot be guessed and the extractor path must
+        # be resolved against it. The reference table lists relative paths too and
+        # needs the same instruction, or an agent not in the skill dir cannot open
+        # them.
+        text = self._read("SKILL.md")
+        table_pos = text.index("## Reference files")
+        table = text[table_pos:]
+        self.assertIn("relative to this skill's directory", table)
+
     def test_max_type_grant_claim_is_measured_not_asserted(self):
         # The (max) row-size behavior is not documented by Microsoft. It was
         # asserted from plausibility once ("half of 2 GB would be absurd"), which
