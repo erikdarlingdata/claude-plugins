@@ -122,18 +122,24 @@ choosing it.
 `OPTION (RECOMPILE)` lets the optimizer see the runtime value of either, and use
 the histogram.
 
-**Plan tells:**
+**Plan tells.** Four distinct patterns, verified on SQL Server 2016, 2019 and 2022:
 
-- Parameters appear in `<ParameterList>` with `ParameterCompiledValue` and
-  `ParameterRuntimeValue`. When those differ, the plan was compiled for one value
-  and executed with another.
-- Local variables **never appear in `ParameterList`**. If a predicate compares
-  against a value you cannot find anywhere in the plan, it is a local variable.
-- A parameter with a runtime value but no compiled value means the plan was not
-  compiled for a sniffed value — `OPTION (RECOMPILE)` or `OPTIMIZE FOR UNKNOWN`.
-- An estimate landing on a round fraction of `TableCardinality` beside a predicate
-  whose value you cannot see is the fingerprint of a local variable in a range
-  predicate.
+| What you see in the plan | What it means |
+|---|---|
+| `ParameterCompiledValue` and `ParameterRuntimeValue` both present | The parameter was sniffed. If they **differ**, the plan was compiled for one value and executed with another. |
+| `ParameterRuntimeValue` present, **no** `ParameterCompiledValue` | The optimizer deliberately did not sniff: `OPTIMIZE FOR UNKNOWN`, `OPTIMIZE FOR (@p UNKNOWN)`, trace flag 4136, or database-scoped `PARAMETER_SNIFFING = OFF`. |
+| `ParameterCompiledValue` present, **no** `ParameterRuntimeValue` | An estimated or cached plan. It never executed, so there is no runtime value. |
+| **No `<ParameterList>` entry at all**, but the value appears as a literal in the predicate | `OPTION (RECOMPILE)`. The parameter was embedded as a constant, so it is not a parameter any more. |
+
+Local variables **never appear in `ParameterList`**, and neither do embedded
+literals. The way to tell them apart is the predicate: a local variable shows as
+`[R].[Sequence] > [@hkey]`, keeping the variable's name and hiding its value. An
+embedded literal shows the value itself.
+
+So: a predicate comparing against an `@name` you cannot find in `ParameterList`
+is a local variable, and its estimate is a density lookup or a fixed guess. An
+estimate landing on a round fraction of `TableCardinality` beside such a predicate
+is the fingerprint of a local variable in a range predicate.
 
 ## Fixes that are not fixes
 

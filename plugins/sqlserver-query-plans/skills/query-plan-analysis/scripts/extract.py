@@ -14,6 +14,7 @@ the estimates went wrong, and only then indexes.
 """
 
 import argparse
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -21,6 +22,34 @@ import xml.etree.ElementTree as ET
 NS = "{http://schemas.microsoft.com/sqlserver/2004/07/showplan}"
 
 EXCHANGE_LOGICAL = {"Gather Streams", "Distribute Streams", "Repartition Streams"}
+
+# A .sqlplan is usually handed to you by someone else. Every string lifted out of
+# it -- object names, predicates, wait types, SQL text -- is untrusted, and XML
+# attribute normalization preserves character references, so `&#xA;` embeds a real
+# newline. Left alone, a hostile plan can forge this tool's own section headers
+# inside the digest an agent is reading. Strip C0 controls and DEL from every line.
+_CONTROL_CHARS = {c: None for c in range(0x20)}
+_CONTROL_CHARS[0x7F] = None
+
+# Real plans are far smaller. A 414 MB plan measured 3.5 GB peak RSS (8.5x), so an
+# unbounded read is a local denial of service on a file someone sent you.
+MAX_PLAN_BYTES = 64 * 1024 * 1024
+
+
+def clean(text):
+    """Flatten any plan-derived string to a single line before it is printed."""
+    return text.translate(_CONTROL_CHARS) if isinstance(text, str) else text
+
+
+class Lines(list):
+    """Output buffer that cannot be broken out of by crafted plan content."""
+
+    def append(self, line):
+        super().append(clean(line))
+
+    def extend(self, items):
+        for item in items:
+            self.append(item)
 
 
 def tag(el):
@@ -259,6 +288,8 @@ def own_cost(node):
 
 def fmt_duration(ms):
     """Raw ms is hard to feel above about a minute."""
+    if ms != ms or ms in (float("inf"), float("-inf")):  # NaN / inf from a broken plan
+        return "(unreadable)"
     if ms < 60_000:
         return f"{ms:,.0f} ms"
     secs = ms / 1000.0
@@ -305,28 +336,78 @@ def effective_child_elapsed(child):
     return sum(effective_child_elapsed(gc) for gc in child.children)
 
 
-def per_thread_self_elapsed(node):
+def _merge(dst, src):
+    for k, v in src.items():
+        dst[k] = dst.get(k, 0.0) + v
+    return dst
+
+
+def _batch_subtree_by_thread(node, key):
+    """Per-thread sum across a contiguous batch-mode zone, stopping at exchanges."""
+    acc = {t["thread"]: t[key] for t in node.work_threads}
+    for child in node.children:
+        if child.physical == "Parallelism":
+            continue  # zone boundary
+        if child.mode == "Batch" and child.has_actual:
+            _merge(acc, _batch_subtree_by_thread(child, key))
+        else:
+            _merge(acc, _child_by_thread(child, key))
+    return acc
+
+
+def _child_by_thread(child, key):
     """
-    Parallel row mode: subtract within a thread, never across threads, then take
-    the slowest thread. Cross-thread subtraction produces nonsense.
+    What a child contributes to its parent's per-thread total.
+
+    Mirrors effective_child_elapsed / effective_child_cpu, but per thread. The
+    parallel path used to subtract each child's raw per-thread number, which is
+    wrong in two ways that both inflate the parent:
+
+      - A batch-mode child reports STANDALONE time, so only its own value gets
+        subtracted and the rest of the batch zone below it stays in the parent.
+      - A pass-through child (Compute Scalar) carries no runtime stats at all, so
+        zero is subtracted and the parent absorbs the entire subtree beneath it.
+
+    Together those crowned a row-mode Nested Loops above a batch Hash Aggregate as
+    the hottest operator in its plan, with the aggregate's time double-counted.
+    """
+    if child.physical == "Parallelism" and child.children:
+        # Exchange: unreliable times, follow the dominant branch.
+        best = max(child.children, key=lambda c: c.elapsed_ms if key == "elapsed" else c.cpu_ms)
+        return _child_by_thread(best, key)
+    if child.mode == "Batch" and child.has_actual:
+        return _batch_subtree_by_thread(child, key)
+    total = child.elapsed_ms if key == "elapsed" else child.cpu_ms
+    if child.has_actual and total > 0:
+        return {t["thread"]: t[key] for t in child.work_threads}
+    # No runtime stats: look through to the descendants that have them.
+    acc = {}
+    for grandchild in child.children:
+        _merge(acc, _child_by_thread(grandchild, key))
+    return acc
+
+
+def per_thread_self(node, key):
+    """
+    Parallel: subtract within a thread, never across threads, then take the
+    slowest thread. Cross-thread subtraction produces nonsense.
 
     The coordinator (thread 0) is excluded: it does no row work, and its elapsed
     is the parallel branch's wall clock, so including it hands every operator in
     the branch the branch's whole duration as its "self" time.
     """
-    parent_by_thread = {t["thread"]: t["elapsed"] for t in node.work_threads}
+    parent_by_thread = {t["thread"]: t[key] for t in node.work_threads}
     child_by_thread = {}
     for child in node.children:
-        target = child
-        if child.physical == "Parallelism" and child.children:
-            target = max(child.children, key=lambda c: c.elapsed_ms)
-        for t in target.work_threads:
-            child_by_thread[t["thread"]] = child_by_thread.get(t["thread"], 0.0) + t["elapsed"]
-    best = 0.0
-    for thread_id, parent_ms in parent_by_thread.items():
-        self_ms = max(0.0, parent_ms - child_by_thread.get(thread_id, 0.0))
-        best = max(best, self_ms)
-    return best
+        _merge(child_by_thread, _child_by_thread(child, key))
+    return max(
+        (max(0.0, p - child_by_thread.get(t, 0.0)) for t, p in parent_by_thread.items()),
+        default=0.0,
+    )
+
+
+def per_thread_self_elapsed(node):
+    return per_thread_self(node, "elapsed")
 
 
 def own_elapsed_ms(node):
@@ -369,18 +450,7 @@ def own_cpu_ms(node):
     if len(node.threads) > 1:
         # Coordinator excluded, same as elapsed: it burns no CPU, so leaving it in
         # only contributes a zero to the max and hides the workers' real self CPU.
-        parent_by_thread = {t["thread"]: t["cpu"] for t in node.work_threads}
-        child_by_thread = {}
-        for child in node.children:
-            target = child
-            if child.physical == "Parallelism" and child.children:
-                target = max(child.children, key=lambda c: c.cpu_ms)
-            for t in target.work_threads:
-                child_by_thread[t["thread"]] = child_by_thread.get(t["thread"], 0.0) + t["cpu"]
-        best = 0.0
-        for thread_id, parent_cpu in parent_by_thread.items():
-            best = max(best, max(0.0, parent_cpu - child_by_thread.get(thread_id, 0.0)))
-        return best
+        return per_thread_self(node, "cpu")
     return max(0.0, node.cpu_ms - sum(effective_child_cpu(c) for c in node.children))
 
 
@@ -665,8 +735,12 @@ def describe_statement(stmt_el, out, top_n, full_sql=False):
             flag = ""
             if compiled is None:
                 # Local variables never appear in ParameterList, so this is not one.
-                flag = "   (not sniffed: RECOMPILE, or OPTIMIZE FOR UNKNOWN)"
-            elif runtime is not None and compiled != runtime:
+                # Verified on 2016/2019/2022: RECOMPILE embeds the parameter as a
+                # literal, removing it from ParameterList. It never lands here.
+                flag = "   (not sniffed: OPTIMIZE FOR UNKNOWN, TF 4136, or PARAMETER_SNIFFING = OFF)"
+            elif runtime is None:
+                flag = "   (no runtime value: this plan never executed)"
+            elif compiled != runtime:
                 flag = "   <-- compiled for a different value than it ran with"
             rows.append(
                 f"  {c.get('Column', '?')}: compiled={compiled or '(none)'} "
@@ -694,15 +768,23 @@ def describe_statement(stmt_el, out, top_n, full_sql=False):
             out.append("  (no operator elapsed times recorded)")
         for ms, n in timed[:top_n]:
             hot.append(n)
-            note = "   [exchange: raw times unreliable]" if n.is_exchange else ""
+            cpu = own_cpu_ms(n)
+            if n.is_exchange:
+                note = "   [exchange: raw times unreliable]"
+            elif ms >= 100 and cpu < ms * 0.1:
+                # Burned wall clock without burning CPU: it was blocked, not busy.
+                # The cause is whatever it was waiting on, not this operator.
+                note = "   [elapsed >> CPU: waited, did not work]"
+            else:
+                note = ""
             out.append(
-                f"  {ms:11,.0f} ms  {own_cpu_ms(n):9,.0f} ms  {fmt_rows(n.actual_rows):>14}   "
+                f"  {ms:11,.0f} ms  {cpu:9,.0f} ms  {fmt_rows(n.actual_rows):>14}   "
                 f"{n.node_id:>4}  {n.label}{note}"
             )
             # Rows read vs rows emitted: the tell for a predicate applied as a
             # filter instead of a seek. Only meaningful when SQL Server recorded it.
-            if n.actual_rows_read > 0 and n.actual_rows > 0:
-                ratio = n.actual_rows_read / n.actual_rows
+            if n.actual_rows_read > 0:
+                ratio = n.actual_rows_read / max(n.actual_rows, 1)
                 if ratio >= 2:
                     if n.row_goal:
                         flag = "   [row goal: stopped early, did not read the table]"
@@ -984,6 +1066,13 @@ def load_plan(path):
     the declaration makes those files unparseable, so detect from the bytes and
     strip the prolog before handing a str to ElementTree.
     """
+    size = os.path.getsize(path)
+    if size > MAX_PLAN_BYTES:
+        raise ValueError(
+            f"{path} is {size / 1048576:.0f} MB, over the "
+            f"{MAX_PLAN_BYTES // 1048576} MB limit. Refusing to parse: a plan this "
+            f"large is malformed or hostile, and reading it can exhaust memory."
+        )
     with open(path, "rb") as f:
         raw = f.read()
 
@@ -1068,6 +1157,22 @@ def describe_node(node, out):
             out.append(f"    {w}")
 
 
+def _describe_matching_nodes(stmts, node_id, detail):
+    """Print detail for every operator with this NodeId. Ids repeat across statements."""
+    for stmt in stmts:
+        qp = stmt.find(NS + "QueryPlan")
+        root_el = qp.find(NS + "RelOp") if qp is not None else None
+        if root_el is None:
+            continue
+        sid = stmt.get("StatementId", "?")
+        for n in flatten(Node(root_el)):
+            if n.node_id != node_id:
+                continue
+            detail.append(f"### StatementId {sid}: {statement_text(stmt)[:110]}")
+            describe_node(n, detail)
+            detail.append("")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Flatten a .sqlplan into a text digest.")
     ap.add_argument("plan", help="path to a .sqlplan / showplan XML file")
@@ -1094,6 +1199,9 @@ def main():
     except OSError as e:
         print(f"error: could not read {args.plan}: {e}", file=sys.stderr)
         return 1
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     except ET.ParseError as e:
         print(
             f"error: {args.plan} is not a valid showplan XML document: {e}\n"
@@ -1110,7 +1218,7 @@ def main():
         )
         return 1
 
-    out = []
+    out = Lines()
     header = f"PLAN DIGEST: {args.plan}"
     out.append(header)
     out.append(
@@ -1139,19 +1247,16 @@ def main():
         return 0
 
     if args.node is not None:
-        detail = []
-        for stmt in stmts:
-            root_el = stmt.find(NS + "QueryPlan").find(NS + "RelOp")
-            if root_el is None:
-                continue
-            sid = stmt.get("StatementId", "?")
-            for n in flatten(Node(root_el)):
-                if n.node_id != args.node:
-                    continue
-                # NodeIds are unique per statement, not per plan. Say which one.
-                detail.append(f"### StatementId {sid}: {statement_text(stmt)[:110]}")
-                describe_node(n, detail)
-                detail.append("")
+        detail = Lines()
+        try:
+            _describe_matching_nodes(stmts, args.node, detail)
+        except RecursionError:
+            print(
+                "error: the plan's operator tree is too deeply nested to analyze "
+                "(malformed or hostile)",
+                file=sys.stderr,
+            )
+            return 1
         if not detail:
             print(f"error: no operator with NodeId {args.node} in {args.plan}", file=sys.stderr)
             return 1
@@ -1162,8 +1267,16 @@ def main():
         out.append(f"{len(stmts)} statements carry a plan. Each is analyzed separately below.")
         out.append("")
 
-    for stmt in stmts:
-        describe_statement(stmt, out, args.top)
+    try:
+        for stmt in stmts:
+            describe_statement(stmt, out, args.top)
+    except RecursionError:
+        print(
+            "error: the plan's operator tree is too deeply nested to analyze "
+            "(malformed or hostile)",
+            file=sys.stderr,
+        )
+        return 1
 
     print("\n".join(out))
     return 0

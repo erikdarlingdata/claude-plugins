@@ -95,11 +95,18 @@ run fine while starving everything else. Look at
 `GrantedMemory / MaxUsedMemory` — a ratio above about 10x deserves attention, and
 above 50x is severe.
 
-Grants are sized from estimated rows *and* estimated row size. A query selecting
-`VARCHAR(MAX)` or wide `NVARCHAR` columns gets a grant based on **half the
-declared maximum width**, not actual data length. `SELECT` of a `VARCHAR(8000)`
-column that always contains 20 characters still reserves 4000 bytes per row. This
-is why "just select fewer columns" is real advice and not a platitude.
+Grants are sized from estimated rows *and* estimated row size, and the row size is
+a guess from the column's **declared** width, not its actual contents.
+
+For a bounded variable-length column the optimizer assumes **half the declared
+maximum**. A `VARCHAR(8000)` column that always holds 20 characters still reserves
+4000 bytes per row. Widening a column you never fill costs memory on every query
+that selects it.
+
+`VARCHAR(MAX)` / `NVARCHAR(MAX)` and the LOB types do **not** follow the half rule
+— half of 2 GB would be absurd. They get a separate fixed assumption instead.
+
+Either way, "select fewer columns" is real advice and not a platitude.
 
 ## No join predicate — `<Warnings NoJoinPredicate="true">`
 
@@ -167,11 +174,12 @@ The ones worth naming:
   fit in memory or the query is reading far more than it needs.
 - `CXPACKET` / `CXCONSUMER` — parallelism coordination. `CXCONSUMER` is generally
   benign. High `CXPACKET` with thread skew points at the skew, not at parallelism.
-- `EXECSYNC` — threads blocked waiting for a serial phase of a parallel plan,
-  classically the build of an **eager spool**. When `EXECSYNC` is near the top and
-  an eager index spool is present, it is the same finding twice: the other threads
-  sat idle while one built the spool. It corroborates, it is not a separate
-  problem.
+- `EXECSYNC` — synchronization outside the exchange iterator. Microsoft names
+  three sources: bitmaps, LOBs, and the spool iterator. **In practice it is only
+  useful in a parallel plan with an eager index spool**, and it does not appear in
+  serial plans at all. When `EXECSYNC` is near the top and an eager index spool is
+  present, that is the same finding twice — the other threads sat idle while one
+  built the spool. It corroborates; it is not a separate problem.
 - `LCK_M_*` — blocking. The plan cannot tell you who blocked you.
 - `SOS_SCHEDULER_YIELD` — CPU pressure, or a spinlock. Rarely the query's fault.
 - `ASYNC_NETWORK_IO` — the client is not consuming results fast enough. Not a plan

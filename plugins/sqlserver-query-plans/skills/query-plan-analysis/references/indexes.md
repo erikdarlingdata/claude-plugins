@@ -9,9 +9,10 @@ verbatim is the fastest way to look like you do not know what you are doing.
 
 What is wrong with it:
 
-- **Equality column order is arbitrary.** Showplan emits them in column-id order,
-  not selectivity order. Key column order is the most consequential decision in
-  index design. SQL Server does not make it for you.
+- **Equality column order is not the order you want.** Microsoft documents it
+  plainly: the suggestion "doesn't specify an order for those columns," and you
+  should "order them based on their selectivity." Key column order is the most
+  consequential decision in index design, and SQL Server does not make it for you.
 - **Existing indexes are ignored.** The optimizer asks for what would help *this*
   query, with no regard for the eleven indexes already on the table. Following the
   requests one at a time produces near-duplicate indexes that all have to be

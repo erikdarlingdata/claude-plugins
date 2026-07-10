@@ -135,6 +135,24 @@ Self **CPU** behaves differently again: it sums across threads, so total CPU
 routinely exceeds total elapsed by roughly the degree of parallelism. That is what
 parallelism is.
 
+## An operator with time but no CPU did not work
+
+Self elapsed far exceeding self CPU on a single operator means it was **blocked**,
+not busy. It burned wall clock waiting for something — a spilling child, an
+exchange, a memory grant. Reporting it as "the hot operator" sends the reader after
+the wrong thing. Find what it waited on. The digest flags these.
+
+The reverse — self CPU exceeding self elapsed — just means the operator ran on
+several threads, and is expected in a parallel plan.
+
+## One version caveat
+
+Row-mode cumulative timings are the default on every version. SQL Server 2022 adds
+an undocumented, off-by-default trace flag (7418) that makes row-mode operators
+report **exclusive** times, like batch mode. If a 2022 plan's numbers refuse to
+reconcile — children summing to more than their parent — that flag is worth ruling
+out before you assume the plan is lying.
+
 ## Sanity checks before you publish a number
 
 - Is your top operator by self time the root node? Then you almost certainly
