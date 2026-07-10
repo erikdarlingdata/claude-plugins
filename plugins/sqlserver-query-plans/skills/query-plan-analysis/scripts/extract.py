@@ -86,16 +86,32 @@ class Node:
                     self.actual_mode = t.get("ActualExecutionMode", "")
             if self.threads:
                 self.has_actual = True
-                # Rows, CPU, reads SUM across threads. Elapsed takes the MAX.
+                # Rows, CPU, reads SUM across threads. Elapsed takes the MAX --
+                # but only across threads that did work. In a parallel plan,
+                # thread 0 is the coordinator: it never carries rows, and its
+                # elapsed is the wall clock of the whole parallel branch. Taking
+                # the max over it makes every operator in the branch look like it
+                # took the branch's entire duration.
                 self.actual_rows = sum(t["rows"] for t in self.threads)
                 self.actual_rows_read = sum(t["rows_read"] for t in self.threads)
                 self.actual_executions = sum(t["executions"] for t in self.threads)
                 self.cpu_ms = sum(t["cpu"] for t in self.threads)
                 self.logical_reads = sum(t["reads"] for t in self.threads)
-                self.elapsed_ms = max(t["elapsed"] for t in self.threads)
+                self.elapsed_ms = max(t["elapsed"] for t in self.work_threads)
 
         self.children = [Node(c, self) for c in child_relops(el)]
         self.warnings = parse_warnings(el)
+
+    @property
+    def work_threads(self):
+        """
+        Threads that actually did work. In a parallel plan thread 0 is the
+        coordinator: zero rows, and an elapsed time equal to the whole branch's
+        wall clock. A serial plan has a single thread numbered 0, which is a
+        worker, so only exclude thread 0 when other threads exist.
+        """
+        workers = [t for t in self.threads if t["thread"] > 0]
+        return workers or self.threads
 
     @property
     def mode(self):
@@ -293,14 +309,18 @@ def per_thread_self_elapsed(node):
     """
     Parallel row mode: subtract within a thread, never across threads, then take
     the slowest thread. Cross-thread subtraction produces nonsense.
+
+    The coordinator (thread 0) is excluded: it does no row work, and its elapsed
+    is the parallel branch's wall clock, so including it hands every operator in
+    the branch the branch's whole duration as its "self" time.
     """
-    parent_by_thread = {t["thread"]: t["elapsed"] for t in node.threads}
+    parent_by_thread = {t["thread"]: t["elapsed"] for t in node.work_threads}
     child_by_thread = {}
     for child in node.children:
         target = child
         if child.physical == "Parallelism" and child.children:
             target = max(child.children, key=lambda c: c.elapsed_ms)
-        for t in target.threads:
+        for t in target.work_threads:
             child_by_thread[t["thread"]] = child_by_thread.get(t["thread"], 0.0) + t["elapsed"]
     best = 0.0
     for thread_id, parent_ms in parent_by_thread.items():
@@ -347,13 +367,15 @@ def own_cpu_ms(node):
     if node.mode == "Batch":
         return node.cpu_ms  # standalone, exactly like batch-mode elapsed
     if len(node.threads) > 1:
-        parent_by_thread = {t["thread"]: t["cpu"] for t in node.threads}
+        # Coordinator excluded, same as elapsed: it burns no CPU, so leaving it in
+        # only contributes a zero to the max and hides the workers' real self CPU.
+        parent_by_thread = {t["thread"]: t["cpu"] for t in node.work_threads}
         child_by_thread = {}
         for child in node.children:
             target = child
             if child.physical == "Parallelism" and child.children:
                 target = max(child.children, key=lambda c: c.cpu_ms)
-            for t in target.threads:
+            for t in target.work_threads:
                 child_by_thread[t["thread"]] = child_by_thread.get(t["thread"], 0.0) + t["cpu"]
         best = 0.0
         for thread_id, parent_cpu in parent_by_thread.items():
