@@ -342,6 +342,24 @@ class Docs(unittest.TestCase):
         text = self._read("SKILL.md")
         self.assertIn("Do not rely on the query text", text)
 
+    def test_pagelatch_and_pageiolatch_are_distinguished(self):
+        # Confusing in-memory page contention with physical I/O sends the reader
+        # after storage when the problem is contention, or the reverse.
+        text = self._read("references/warnings.md")
+        self.assertIn("`PAGELATCH_SH` / `_EX` / `_UP` / `_DT`", text)
+        self.assertIn("already in memory", text)
+        self.assertIn("Read the middle of the name", text)
+
+    def test_undocumented_wait_types_are_labelled_as_such(self):
+        # The description field is read by people who cannot tell Microsoft's
+        # definition from a community guess. Say which is which.
+        text = self._read("references/warnings.md")
+        self.assertIn("None of these three are documented by Microsoft", text)
+        self.assertIn("Not Linux-only", text)                  # SOS_PHYS_PAGE_CACHE
+        self.assertNotIn("columnstore wait.", text.replace(
+            "does not define it as a columnstore wait.", ""))  # MEMORY_ALLOCATION_EXT
+        self.assertIn("spinlock\n  contention is not in Microsoft's definition", text)
+
     def test_all_three_construct_pairs_are_distinguished(self):
         # Six constructs, three pairings people conflate. Each needs its own
         # section, because the model will otherwise assert they are equivalent.

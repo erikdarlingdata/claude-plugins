@@ -166,24 +166,111 @@ the query's `WHERE` clause so the optimizer can match it.
 Present in actual plans on reasonably modern builds. `WaitType`, `WaitTimeMs`,
 `WaitCount`.
 
-The ones worth naming:
+Wait times in a plan are cumulative across worker threads, so a parallel query
+shows totals that can exceed its own wall clock. Compare against
+`QueryTimeStats/@ElapsedTime` before concluding anything. (Microsoft documents that
+`CpuTime` sums across threads; it does not document the same for `WaitTimeMs`, so
+treat that as observed behavior rather than a specification.)
+
+### Memory, I/O and the client
 
 - `RESOURCE_SEMAPHORE` — waiting for a memory grant. Somebody's grant is too big,
   possibly this query's.
-- `PAGEIOLATCH_SH` — reading data pages from disk. Either the working set does not
-  fit in memory or the query is reading far more than it needs.
-- `CXPACKET` / `CXCONSUMER` — parallelism coordination. `CXCONSUMER` is generally
-  benign. High `CXPACKET` with thread skew points at the skew, not at parallelism.
-- `EXECSYNC` — synchronization outside the exchange iterator. Microsoft names
+- `ASYNC_NETWORK_IO` — the client is not consuming results fast enough. Not a plan
+  problem at all, and no amount of tuning fixes it.
+- `WRITELOG` — waiting for a log flush. Modification plans. Log storage latency, or
+  too many tiny transactions.
+- `IO_COMPLETION` — short, synchronous, **non-data-page** I/O: sort and spill reads
+  and writes against tempdb, log reads. Data-page I/O appears as `PAGEIOLATCH_*`.
+- `ASYNC_IO_COMPLETION` — asynchronous non-data I/O for background work: log
+  shipping, mirroring, some bulk import. Rarely about your query.
+
+### Latches: the distinction that gets missed
+
+- `PAGEIOLATCH_SH` / `_EX` / `_UP` / `_DT` — a latch on a buffer page **while it is
+  moving between disk and memory**. Physical I/O. The working set does not fit in
+  memory, or the query is reading far more than it needs.
+- `PAGELATCH_SH` / `_EX` / `_UP` / `_DT` — a latch on a page **already in memory**.
+  No disk involved. Thread-on-thread contention. Two classic causes: tempdb
+  allocation bitmap contention (PFS/GAM/SGAM), and last-page insert contention on
+  an ascending clustered key.
+- `LATCH_SH` / `_EX` / `_UP` / `_KP` — a latch on an internal memory structure that
+  is not a data page. `KP` is a keep latch. `LATCH_EX` on
+  `ACCESS_METHODS_DATASET_PARENT` is the classic parallel-scan contention.
+
+Confusing `PAGELATCH` with `PAGEIOLATCH` sends the reader after storage when the
+problem is contention, or the reverse. Read the middle of the name.
+
+### Locks
+
+`LCK_M_S` / `_U` / `_X` are shared, update and exclusive. `LCK_M_IS` / `_IU` / `_IX`
+are the intent variants held at a coarser granularity. `LCK_M_SCH_S` / `_SCH_M` are
+schema stability and schema modification. `LCK_M_RS_S` is a key-range shared lock,
+and only appears under serializable isolation.
+
+The plan tells you that you waited on a lock. It **cannot** tell you who blocked
+you. Do not invent a blocker.
+
+### Parallelism
+
+- `CXPACKET` — exchange coordination. Since the `CXCONSUMER` split it is largely
+  producer-side. High `CXPACKET` alongside thread skew points at the skew, not at
+  parallelism.
+- `CXCONSUMER` — consumer-side, added in SQL Server 2016 SP2 and 2017 CU3.
+  Documented as a normal part of parallel execution, so generally benign. Sustained
+  high values can still mean a slow consumer backing up the exchange.
+- `CXSYNC_PORT` / `CXSYNC_CONSUMER` — **SQL Server 2022+** and Azure SQL. A further
+  split of exchange synchronization: port open/close between producer and consumer,
+  and reaching a sync point across all consumers. On 2022+, `CXPACKET` refers only
+  to waiting on threads producing rows.
+- `EXECSYNC` — synchronization **outside** the exchange iterator. Microsoft names
   three sources: bitmaps, LOBs, and the spool iterator. **In practice it is only
   useful in a parallel plan with an eager index spool**, and it does not appear in
   serial plans at all. When `EXECSYNC` is near the top and an eager index spool is
   present, that is the same finding twice — the other threads sat idle while one
   built the spool. It corroborates; it is not a separate problem.
-- `LCK_M_*` — blocking. The plan cannot tell you who blocked you.
-- `SOS_SCHEDULER_YIELD` — CPU pressure, or a spinlock. Rarely the query's fault.
-- `ASYNC_NETWORK_IO` — the client is not consuming results fast enough. Not a plan
-  problem at all, and no amount of tuning fixes it.
+
+### Batch mode
+
+All of these mean threads synchronizing inside a parallel batch-mode plan. Large
+values usually mean skew or a spill, not a defect in the operator.
+
+- `HTBUILD` — building the hash table for a hash join or aggregation.
+- `HTREPARTITION` — repartitioning that hash table across threads.
+- `HTDELETE` — synchronizing at the end of the join or aggregation.
+- `HTMEMO` — synchronizing before scanning the hash table to output matched or
+  unmatched rows. Relevant to outer, semi and anti joins.
+- `BMPBUILD` — building a large bitmap filter.
+- `BPSORT` — synchronizing a batch-mode parallel sort.
+
+### Scheduler and memory manager
+
+- `SOS_SCHEDULER_YIELD` — the task voluntarily yielded the scheduler. Documented as
+  a possible symptom of CPU pressure. The common association with **spinlock
+  contention is not in Microsoft's definition** — that is community interpretation.
+  Rarely the query's fault either way.
+- `CMEMTHREAD` — contention allocating from the same thread-safe memory object.
+- `MEMORY_ALLOCATION_EXT` — allocating memory from the internal pool or from the
+  OS. Documented generically. It dominates batch-mode and columnstore workloads in
+  practice, but Microsoft does not define it as a columnstore wait.
+- `SOS_PHYS_PAGE_CACHE` — the memory manager's mutex for allocating physical pages
+  or returning them to the OS. **Not Linux-only**, despite the association;
+  Microsoft documents it on Windows for NUMA foreign-page processing.
+
+### Preemptive waits
+
+A `PREEMPTIVE_*` wait means the worker left cooperative SQLOS scheduling and ran
+preemptively while calling out to the OS or an external component. That time is
+spent outside SQL Server's control.
+
+- `PREEMPTIVE_OS_WRITEFILEGATHER` — zeroing a file during growth, creation or
+  restore. Large values on a **data** file suggest instant file initialization is
+  off. From SQL Server 2022, log autogrowth up to 64 MB can also use instant file
+  initialization, so "log files are always zeroed" is no longer true.
+- `PREEMPTIVE_OS_FILEOPS`, `PREEMPTIVE_HTTP_REQUEST`, `PREEMPTIVE_OLEDBOPS` — OS
+  file operations, an outbound HTTP call, and OLEDB calls such as linked servers.
+  **None of these three are documented by Microsoft.** Their meanings are inferred
+  from their names; say so if you lean on them.
 
 **A serial plan showing heavy `CXPACKET` is not a contradiction.** If
 `DegreeOfParallelism` is 0 or 1 and `NonParallelPlanReason` is set, but `CXPACKET`
