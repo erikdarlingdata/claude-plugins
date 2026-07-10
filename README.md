@@ -8,13 +8,13 @@ A [Claude Code plugin marketplace](https://code.claude.com/docs/en/plugin-market
 
 ## Plugins
 
-### `query-plan-analysis`
+### `sqlserver-query-plans`
 
 Teaches Claude to read a SQL Server execution plan and say what is actually slow,
 and why.
 
 ```
-/plugin install query-plan-analysis@erikdarling
+/plugin install sqlserver-query-plans@erikdarling
 ```
 
 Point Claude at a `.sqlplan` file and ask. The skill is model-invoked — you do not
