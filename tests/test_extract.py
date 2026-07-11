@@ -338,6 +338,45 @@ class Robustness(unittest.TestCase):
         self.assertEqual(failures, [], f"{len(failures)} plans failed to parse")
 
 
+class ManifestVersions(unittest.TestCase):
+    """
+    The plugin version lives in FOUR manifests -- two for Claude Code, two for
+    GitHub Copilot CLI -- and they must agree on every release. Keeping four
+    numbers in sync by hand is not hard, it is forgettable: a stale one shipped
+    the day Copilot support merged, and only a manual check caught it. This makes
+    "keep them in sync" an enforced invariant instead of a memory task.
+    """
+
+    # (path relative to repo root, JSON pointer to the plugin's version)
+    MANIFESTS = [
+        (".claude-plugin/marketplace.json", ("plugins", 0, "version")),
+        (".github/plugin/marketplace.json", ("plugins", 0, "version")),
+        ("plugins/sqlserver-query-plans/.claude-plugin/plugin.json", ("version",)),
+        ("plugins/sqlserver-query-plans/plugin.json", ("version",)),
+    ]
+
+    def _dig(self, obj, path):
+        for key in path:
+            obj = obj[key]
+        return obj
+
+    def test_all_manifest_versions_match(self):
+        import json
+        found = {}
+        for rel, pointer in self.MANIFESTS:
+            f = REPO / rel
+            if not f.exists():
+                continue  # a host's manifests may be absent in a partial checkout
+            found[rel] = self._dig(json.loads(f.read_text(encoding="utf-8")), pointer)
+        self.assertTrue(found, "no manifests found")
+        distinct = set(found.values())
+        self.assertEqual(
+            len(distinct), 1,
+            "plugin version disagrees across manifests:\n"
+            + "\n".join(f"  {v}  {k}" for k, v in sorted(found.items())),
+        )
+
+
 class Docs(unittest.TestCase):
     """The skill's prose is the product. Guard the claims that were wrong once."""
 

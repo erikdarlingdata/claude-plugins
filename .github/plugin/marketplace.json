@@ -12,7 +12,7 @@
     {
       "name": "sqlserver-query-plans",
       "description": "Read a SQL Server execution plan and explain what is actually slow, and why. Prevents the standard wrong conclusions: cost percentages read as measurements, operators ranked by cumulative time, estimated rows compared to actual without dividing by executions, and missing-index DDL pasted verbatim.",
-      "version": "1.5.2",
+      "version": "1.5.4",
       "source": "./plugins/sqlserver-query-plans"
     }
   ]
