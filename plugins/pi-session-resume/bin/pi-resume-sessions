@@ -1,0 +1,285 @@
+#!/bin/bash
+# pi-resume-sessions — restore interrupted pi sessions after a reboot.
+#
+# Reads ~/.pi/agent/session-registry/*.json (written by the session-registry
+# pi extension) and, for every entry whose pi process is no longer running,
+# reopens it with:  pi --session <sessionFile>   (in the session's original cwd)
+#
+# Relevance: a session's LAST ACTIVITY is the mtime of its session file (pi
+# appends on every message). Sessions idle longer than --max-age are skipped
+# (reported, not deleted). Deliberately quit sessions (Ctrl+D, /quit) are
+# never here at all — the extension deregisters them at quit.
+#
+# Targets:
+#   --ghostty     (default on macOS) one Ghostty window, one TAB per session
+#   --tmux        (default elsewhere) windows in a detached tmux session
+#                 "pi-restore" (attach with: tmux attach -t pi-restore)
+#   --terminal    macOS Terminal.app, one WINDOW per session (Terminal can't
+#                 be scripted into tabs without Accessibility permissions)
+#
+# Filters:
+#   --max-age <hours>  skip sessions idle longer than this (default 72,
+#                      env override: PI_RESUME_MAX_AGE_HOURS)
+#   --named-only       only resume sessions you named (pi -n / /name)
+#   --all              ignore all filters, resume everything dead
+#
+# Modes:
+#   pi-resume-sessions [flags]    resume interrupted sessions (newest first)
+#   pi-resume-sessions --list     show the registry (state/age per entry)
+#   pi-resume-sessions --dry-run  show what would be resumed, do nothing
+#   pi-resume-sessions --clean    delete entries for ALL dead sessions
+#                                 ("forget the interrupted")
+#
+# Entries for still-running sessions are skipped, so it's safe to run at any
+# time. Once a session is resumed, its own extension re-registers it.
+#
+# Requires: jq. Bash 3.2 compatible (macOS /bin/bash).
+set -u
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+REGISTRY_DIR="$HOME/.pi/agent/session-registry"
+TMUX_SESSION="pi-restore"
+
+OS=$(uname -s)
+MODE="resume"
+if [ "$OS" = "Darwin" ]; then TARGET="ghostty"; else TARGET="tmux"; fi
+MAX_AGE_H="${PI_RESUME_MAX_AGE_HOURS:-72}"
+ALL=0
+NAMED_ONLY=0
+
+usage() {
+  echo "usage: pi-resume-sessions [--ghostty|--tmux|--terminal] [--max-age <hours>] [--named-only] [--all] [--list|--dry-run|--clean]" >&2
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --list)       MODE="list" ;;
+    --dry-run)    MODE="dry" ;;
+    --clean)      MODE="clean" ;;
+    --ghostty)    TARGET="ghostty" ;;
+    --tmux)       TARGET="tmux" ;;
+    --terminal)   TARGET="terminal" ;;
+    --all)        ALL=1 ;;
+    --named-only) NAMED_ONLY=1 ;;
+    --max-age)    shift; [ $# -gt 0 ] || { usage; exit 2; }; MAX_AGE_H="$1" ;;
+    --max-age=*)  MAX_AGE_H="${1#*=}" ;;
+    *) usage; exit 2 ;;
+  esac
+  shift
+done
+case "$MAX_AGE_H" in ''|*[!0-9]*) echo "pi-resume-sessions: --max-age must be a number of hours" >&2; exit 2 ;; esac
+if [ "$OS" != "Darwin" ] && { [ "$TARGET" = "ghostty" ] || [ "$TARGET" = "terminal" ]; }; then
+  echo "pi-resume-sessions: --$TARGET is macOS-only; use --tmux" >&2
+  exit 2
+fi
+
+command -v jq >/dev/null || { echo "pi-resume-sessions: jq not found" >&2; exit 1; }
+
+shopt -s nullglob
+files=("$REGISTRY_DIR"/*.json)
+if [ ${#files[@]} -eq 0 ]; then
+  echo "pi-resume-sessions: no registered sessions"
+  exit 0
+fi
+
+# mtime helper: BSD stat (macOS) first, GNU stat (Linux) fallback.
+file_mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+}
+
+# Is the registered pid still a live pi process (not a reused pid)?
+is_alive() {
+  local pid="$1"
+  [ "$pid" -gt 0 ] 2>/dev/null || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  ps -o command= -p "$pid" 2>/dev/null | grep -qE '(^|[ /])pi( |$)'
+}
+
+# Escape a string for use inside an AppleScript double-quoted literal.
+as_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+fmt_age() {
+  local h="$1"
+  if [ "$h" -lt 48 ]; then echo "${h}h"; else echo "$((h / 24))d"; fi
+}
+
+NOW=$(date +%s)
+
+# Sort registry entries by session-file activity (mtime), newest first.
+sorted=$(
+  for f in "${files[@]}"; do
+    sfile=$(jq -r '.sessionFile // empty' "$f" 2>/dev/null)
+    m=0
+    [ -n "$sfile" ] && [ -f "$sfile" ] && m=$(file_mtime "$sfile")
+    printf '%s\t%s\n' "$m" "$f"
+  done | sort -rn
+)
+
+skipped=0 cleaned=0 count=0
+R_NAME=() R_CWD=() R_FILE=() R_ID=()
+STALE=()
+
+if [ "$MODE" = "list" ]; then
+  printf '%-6s %-6s %-8s %-28s %s\n' "STATE" "AGE" "ID" "NAME" "CWD"
+fi
+
+while IFS=$'\t' read -r mtime f; do
+  [ -n "$f" ] || continue
+  id=$(jq -r '.sessionId // empty' "$f" 2>/dev/null)
+  name=$(jq -r '.name // empty' "$f" 2>/dev/null)
+  cwd=$(jq -r '.cwd // empty' "$f" 2>/dev/null)
+  sfile=$(jq -r '.sessionFile // empty' "$f" 2>/dev/null)
+  pid=$(jq -r '.pid // 0' "$f" 2>/dev/null)
+
+  if [ -z "$id" ] || [ -z "$sfile" ]; then
+    echo "skipping malformed entry: $f" >&2
+    continue
+  fi
+
+  alive="dead"
+  is_alive "$pid" && alive="live"
+  label="${name:-(unnamed)}"
+  age_h=$(( (NOW - mtime) / 3600 ))
+  [ "$mtime" -eq 0 ] && age_h=999999
+  age=$(fmt_age "$age_h")
+
+  case "$MODE" in
+    list)
+      printf '%-6s %-6s %-8s %-28.28s %s\n' "$alive" "$age" "${id:0:8}" "$label" "$cwd"
+      continue
+      ;;
+    clean)
+      if [ "$alive" = "dead" ]; then
+        rm -f "$f"
+        cleaned=$((cleaned + 1))
+        echo "forgot: $label (${id:0:8}, idle $age)"
+      fi
+      continue
+      ;;
+  esac
+
+  # resume / dry-run
+  if [ "$alive" = "live" ]; then
+    skipped=$((skipped + 1))
+    continue
+  fi
+  if [ ! -f "$sfile" ]; then
+    echo "session file gone, skipping: $label ($sfile)" >&2
+    continue
+  fi
+
+  # Relevance filters (bypass with --all)
+  if [ "$ALL" -ne 1 ]; then
+    if [ "$age_h" -gt "$MAX_AGE_H" ]; then
+      STALE+=("$label (${id:0:8}) idle $age")
+      continue
+    fi
+    if [ "$NAMED_ONLY" -eq 1 ] && [ -z "$name" ]; then
+      STALE+=("$label (${id:0:8}) unnamed, idle $age")
+      continue
+    fi
+  fi
+
+  [ -d "$cwd" ] || cwd="$HOME"
+
+  if [ "$MODE" = "dry" ]; then
+    echo "would resume ($TARGET): $label (${id:0:8}) idle $age, in $cwd"
+    count=$((count + 1))
+    continue
+  fi
+
+  R_ID+=("$id"); R_NAME+=("$label"); R_CWD+=("$cwd"); R_FILE+=("$sfile")
+  count=$((count + 1))
+done <<< "$sorted"
+
+report_stale() {
+  if [ ${#STALE[@]} -gt 0 ]; then
+    echo ""
+    echo "not resumed (older than ${MAX_AGE_H}h or filtered):"
+    for s in "${STALE[@]}"; do echo "  - $s"; done
+    echo "  (use --all to resume these, --max-age N to widen, --clean to forget)"
+  fi
+}
+
+case "$MODE" in
+  list)  exit 0 ;;
+  clean) echo "cleaned $cleaned dead entr$( [ "$cleaned" = 1 ] && echo y || echo ies)"; exit 0 ;;
+  dry)   echo "dry run: $count would be resumed, $skipped still running"; report_stale; exit 0 ;;
+esac
+
+if [ "$count" -eq 0 ]; then
+  echo "nothing to resume ($skipped still running)"
+  report_stale
+  exit 0
+fi
+
+case "$TARGET" in
+  ghostty)
+    # Build one AppleScript: first session gets a new window, the rest become
+    # tabs in it (newest session = first tab). "initial input" types the
+    # resume command into your normal login shell, so pi runs with your full
+    # environment and the tab survives if pi exits.
+    osa=$(mktemp /tmp/pi-resume-ghostty.XXXXXX)
+    {
+      echo 'tell application "Ghostty"'
+      echo '  activate'
+      for i in "${!R_ID[@]}"; do
+        cmd=$(printf 'pi --session %q' "${R_FILE[$i]}")
+        cfg="{initial working directory:\"$(as_escape "${R_CWD[$i]}")\", initial input:\"$(as_escape "$cmd")\" & linefeed}"
+        if [ "$i" -eq 0 ]; then
+          echo "  set w to new window with configuration $cfg"
+        else
+          echo "  new tab in w with configuration $cfg"
+        fi
+        echo '  delay 0.2'
+      done
+      echo 'end tell'
+    } > "$osa"
+    if osascript "$osa" >/dev/null; then
+      for i in "${!R_ID[@]}"; do
+        echo "resumed: ${R_NAME[$i]} (${R_ID[$i]:0:8}) in ${R_CWD[$i]}"
+      done
+      echo "done: $count resumed as Ghostty tabs, $skipped still running"
+    else
+      echo "pi-resume-sessions: Ghostty scripting failed (see $osa); try --tmux" >&2
+      exit 1
+    fi
+    rm -f "$osa"
+    ;;
+
+  tmux)
+    command -v tmux >/dev/null || { echo "pi-resume-sessions: tmux not found" >&2; exit 1; }
+    for i in "${!R_ID[@]}"; do
+      win=$(printf '%s' "${R_NAME[$i]}" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-28)
+      [ -n "$win" ] || win="pi-${R_ID[$i]:0:8}"
+      if ! tmux has-session -t "=$TMUX_SESSION" 2>/dev/null; then
+        pane=$(tmux new-session -d -s "$TMUX_SESSION" -n "$win" -c "${R_CWD[$i]}" -P -F '#{pane_id}')
+      else
+        pane=$(tmux new-window -a -t "$TMUX_SESSION" -n "$win" -c "${R_CWD[$i]}" -P -F '#{pane_id}')
+      fi
+      tmux send-keys -t "$pane" "$(printf 'pi --session %q' "${R_FILE[$i]}")" Enter
+      echo "resumed: ${R_NAME[$i]} (${R_ID[$i]:0:8}) in ${R_CWD[$i]}"
+      sleep 0.1
+    done
+    echo "done: $count resumed, $skipped still running"
+    echo "attach with: tmux attach -t $TMUX_SESSION"
+    ;;
+
+  terminal)
+    for i in "${!R_ID[@]}"; do
+      cmd=$(printf 'cd %q && pi --session %q' "${R_CWD[$i]}" "${R_FILE[$i]}")
+      osascript -e "tell application \"Terminal\"
+        activate
+        do script \"$(as_escape "$cmd")\"
+      end tell" >/dev/null
+      echo "resumed: ${R_NAME[$i]} (${R_ID[$i]:0:8}) in ${R_CWD[$i]}"
+      sleep 0.2
+    done
+    echo "done: $count resumed as Terminal windows, $skipped still running"
+    ;;
+esac
+
+report_stale
+exit 0

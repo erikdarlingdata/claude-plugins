@@ -1,7 +1,7 @@
 {
   "name": "darling-data-plugins",
-  "version": "1.0.0",
-  "description": "Darling Data skills for pi, Claude Code, and Copilot CLI: SQL Server query plan analysis",
+  "version": "1.1.0",
+  "description": "Darling Data plugins for pi, Claude Code, and Copilot CLI: SQL Server query plan analysis, plus a pi session auto-resume extension",
   "license": "MIT",
   "author": "Erik Darling (https://erikdarling.com)",
   "repository": {
@@ -15,9 +15,14 @@
     "pi-package",
     "sql-server",
     "query-plans",
-    "skills"
+    "skills",
+    "session-resume"
   ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "pi": {
-    "skills": ["./plugins/*/skills"]
+    "skills": ["./plugins/*/skills"],
+    "extensions": ["./plugins/*/extensions"]
   }
 }

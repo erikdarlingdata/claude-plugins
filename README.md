@@ -81,15 +81,37 @@ As in Claude Code, the skill is model-invoked: point Copilot at a `.sqlplan` and
 ## pi
 
 This repository is also a [pi package](https://pi.dev/packages): the root
-`package.json` declares every `plugins/*/skills` directory, and
-[pi](https://pi.dev) reads the same `SKILL.md` format the other two harnesses
-do. Install straight from git — no marketplace step:
+`package.json` declares every `plugins/*/skills` and `plugins/*/extensions`
+directory, and [pi](https://pi.dev) reads the same `SKILL.md` format the other
+two harnesses do. Install straight from git — no marketplace step:
 
 ```
 pi install git:github.com/erikdarlingdata/claude-plugins
 ```
 
 As everywhere else, the skill is model-invoked: point pi at a `.sqlplan` and ask.
+
+### `pi-session-resume` (pi only)
+
+Your machine restarts for updates with a dozen pi sessions open; this brings
+them all back with one command, as terminal tabs, in their original
+directories, with full history:
+
+```
+pi-resume-sessions
+```
+
+An extension (auto-loaded by the install above) records every open interactive
+session; the `pi-resume-sessions` script reopens the interrupted ones — Ghostty
+tabs on macOS, tmux anywhere. Sessions you quit deliberately (Ctrl+D, `/quit`)
+stay closed; sessions killed by a reboot, a closed window, or a crash come
+back. Idle-time filters keep abandoned sessions from resurrecting.
+
+The script needs a one-time symlink onto your PATH, and macOS needs a one-time
+Automation permission — see
+[`plugins/pi-session-resume/README.md`](plugins/pi-session-resume/README.md)
+for both, plus the design notes. This one is pi-only: Claude Code and Copilot
+CLI don't load pi extensions.
 
 ## About
 
