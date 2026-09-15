@@ -94,7 +94,7 @@ As everywhere else, the skill is model-invoked: point pi at a `.sqlplan` and ask
 ## About
 
 Built by [Erik Darling](https://erikdarling.com) at Darling Data. SQL Server
-consulting, training, and free tools: **https://erikdarling.com**
+consulting, training, and free tools: **<https://erikdarling.com>**
 
 ## License
 
