@@ -78,6 +78,19 @@ Or add just the skill, without the marketplace:
 
 As in Claude Code, the skill is model-invoked: point Copilot at a `.sqlplan` and ask.
 
+## pi
+
+This repository is also a [pi package](https://pi.dev/packages): the root
+`package.json` declares every `plugins/*/skills` directory, and
+[pi](https://pi.dev) reads the same `SKILL.md` format the other two harnesses
+do. Install straight from git — no marketplace step:
+
+```
+pi install git:github.com/erikdarlingdata/claude-plugins
+```
+
+As everywhere else, the skill is model-invoked: point pi at a `.sqlplan` and ask.
+
 ## About
 
 Built by [Erik Darling](https://erikdarling.com) at Darling Data. SQL Server

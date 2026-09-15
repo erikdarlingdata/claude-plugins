@@ -1,0 +1,20 @@
+{
+  "name": "darling-data-plugins",
+  "version": "1.0.0",
+  "description": "Darling Data skills for pi, Claude Code, and Copilot CLI: SQL Server query plan analysis",
+  "license": "MIT",
+  "author": "Erik Darling (https://erikdarling.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erikdarlingdata/claude-plugins.git"
+  },
+  "keywords": [
+    "pi-package",
+    "sql-server",
+    "query-plans",
+    "skills"
+  ],
+  "pi": {
+    "skills": ["./plugins/*/skills"]
+  }
+}
