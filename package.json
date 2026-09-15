@@ -8,6 +8,9 @@
     "type": "git",
     "url": "git+https://github.com/erikdarlingdata/claude-plugins.git"
   },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org"
+  },
   "keywords": [
     "pi-package",
     "sql-server",
