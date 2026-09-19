@@ -135,6 +135,18 @@ for signals, modes, and design notes. Requires the
 [pi-subagents](https://github.com/tintinweb/pi-subagents) extension; pi-only
 for the same reason as above.
 
+## Not a plugin: the pi setup guide
+
+[`pi-setup-guide.md`](pi-setup-guide.md) — a distilled ~15-minute setup for
+[pi](https://pi.dev) written for Claude Code ex-pats: install, model/thinking
+defaults, the trust model, a Claude-to-pi habit translation table, a
+tested-together extension stack, full source for a few small
+quality-of-life extensions (refusal fallback, tab-title status, `!` command
+wake-ups + autocomplete), how to point pi at years of accumulated Claude Code
+memory instead of migrating it, and a troubleshooting section of the gotchas
+that actually happened. The plugins in this repo (§11–§13 of the guide) slot
+into that stack.
+
 ## About
 
 Built by [Erik Darling](https://erikdarling.com) at Darling Data. SQL Server
