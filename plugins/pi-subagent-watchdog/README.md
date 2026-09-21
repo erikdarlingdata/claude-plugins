@@ -106,7 +106,7 @@ restart either way.
     "minutes": 10,
     "compactions": 1
   },
-  "models": { "required": null, "onViolation": "hard-stop" },
+  "models": { "required": null, "onViolation": "notify", "unknownGraceMs": 30000 },
   "hardStop": { "enabled": false, "tokens": 1500000, "minutes": 45 }
 }
 ```
@@ -116,20 +116,25 @@ restart either way.
 - `batchWindowMs` collects agents that breach near one another into one model
   turn. `globalCooldownMs` rate-limits the whole fleet; `cooldownMs` still
   rate-limits each agent.
-- `maxCheckInsPerAgent` caps automatic LLM wakes. Later breaches are consumed,
-  shown in the UI, and preserved in the audit trail without waking the model.
-  Human-requested `/watchdog` check-ins bypass the cap.
+- `maxCheckInsPerAgent` caps automatic LLM wakes. In strict mode the cap is
+  absolute; in guide mode a signal the agent has never crossed before (for
+  example, its first compaction) may speak once beyond the cap. Other later
+  breaches stay UI/audit-only. Human-requested `/watchdog` check-ins bypass it.
 - `auditTrail` persists structured `subagent-watchdog-audit` custom entries in
   the root session JSONL. Custom entries are durable but do not participate in
   LLM context.
 - Re-arm: after alerting, a signal re-alerts at `value × renotifyFactor`
   (`contextPercent`: +15 pts; `compactions`: each increment). Values are
   sanitized — strings parse, nonsense falls back, floors apply.
-- `models.required` — optional exact effective `provider/model-id` invariant.
-  A mismatch is written to the structured audit and either hard-stopped or
-  shown as an error notification (`onViolation`). This is defense-in-depth:
-  primary model coercion belongs in pi-subagents before the child launches.
-  Workflow/nested children remain invisible to the watchdog.
+- `models.required` — optional exact effective `provider/model-id` invariant,
+  read from the live child session on every spawn path with the invocation
+  snapshot as a startup fallback. A mismatch is written to the structured
+  audit and either notified (the default) or hard-stopped (`onViolation`). A
+  running agent whose model stays unknown past `unknownGraceMs` fails closed the
+  same way. Bare names are rejected at config load rather than armed. Run
+  `/watchdog status` and copy its exact model string into the config. This is
+  still defense-in-depth: primary coercion belongs in pi-subagents before launch,
+  and workflow/nested children remain invisible to the watchdog.
 - `hardStop` — opt-in automatic abort. Unlike a steer (which queues behind a
   running tool call), the stop interrupts a wedged tool mid-execution. The
   outcome is reported to the orchestrator **from the RPC reply**: a failed or

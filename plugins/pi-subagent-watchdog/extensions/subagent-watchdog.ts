@@ -85,6 +85,10 @@ interface WatchdogConfig {
     required?: string | null;
     /** A mismatch is either UI/audit-only or immediately stopped. */
     onViolation: "hard-stop" | "notify";
+    /** Let the session populate its live model before treating unknown as a violation. */
+    unknownGraceMs: number;
+    /** Invalid configured policy, surfaced loudly while enforcement stays off. */
+    configurationError?: string;
   };
   hardStop: {
     enabled: boolean;
@@ -115,7 +119,8 @@ const DEFAULTS: WatchdogConfig = {
   },
   models: {
     required: null,
-    onViolation: "hard-stop",
+    onViolation: "notify",
+    unknownGraceMs: 30_000,
   },
   hardStop: {
     enabled: false,
@@ -169,6 +174,11 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
   };
   // Sanitize — user JSON can hold strings, zeros, negatives (review finding #4).
   const enabledRaw = m.enabled;
+  const requiredModelInput = typeof m.models.required === "string" ? m.models.required.trim() : "";
+  const modelConfigurationError = requiredModelInput && !requiredModelInput.includes("/")
+    ? `models.required must be an exact provider/model id; got "${requiredModelInput}". ` +
+      `Run /watchdog status and copy the effective model string.`
+    : undefined;
   return {
     enabled: enabledRaw !== false && enabledRaw !== "false" && enabledRaw !== 0,
     pollIntervalMs: num(m.pollIntervalMs, DEFAULTS.pollIntervalMs, 2_000),
@@ -190,10 +200,10 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
       compactions: optNum(m.signals.compactions, DEFAULTS.signals.compactions),
     },
     models: {
-      required: typeof m.models.required === "string" && m.models.required.trim()
-        ? m.models.required.trim()
-        : null,
-      onViolation: m.models.onViolation === "notify" ? "notify" : "hard-stop",
+      required: modelConfigurationError || !requiredModelInput ? null : requiredModelInput,
+      onViolation: m.models.onViolation === "hard-stop" ? "hard-stop" : "notify",
+      unknownGraceMs: num(m.models.unknownGraceMs, DEFAULTS.models.unknownGraceMs, 5_000),
+      configurationError: modelConfigurationError,
     },
     hardStop: {
       enabled: m.hardStop.enabled === true,
@@ -237,6 +247,8 @@ interface SubagentRecord {
   };
   session?: {
     getSessionStats?: () => { contextUsage?: { percent?: number } | null };
+    /** Live model exists on every running AgentSession, regardless of spawn path. */
+    state?: { model?: { provider?: string; id?: string } };
     /** Same call pi-subagents' own steerAgent() makes — injects a user message into the child. */
     steer?: (message: string) => Promise<void>;
   };
@@ -293,6 +305,8 @@ interface PendingCheckIn {
   description: string;
   model?: string;
   checkInNumber: number | null;
+  /** Guide mode may speak once for a signal this agent has never crossed. */
+  capExempt?: boolean;
   vitals: Vitals;
   breaches: Breach[];
   advice: string[];
@@ -486,8 +500,18 @@ function vitalsLine(v: Vitals): string {
   return parts.filter(Boolean).join(" · ");
 }
 
+function effectiveModelId(rec: SubagentRecord): string | undefined {
+  try {
+    const model = rec.session?.state?.model;
+    if (model?.provider && model.id) return `${model.provider}/${model.id}`;
+  } catch {
+    // A partial/disposing session falls back to the pre-session snapshot.
+  }
+  return rec.invocation?.modelId;
+}
+
 function modelLine(rec: SubagentRecord): string | undefined {
-  const model = rec.invocation?.modelId ?? rec.invocation?.modelName;
+  const model = effectiveModelId(rec) ?? rec.invocation?.modelName;
   if (!model) return undefined;
   const thinking = rec.invocation?.thinking;
   return thinking ? `${model} · thinking ${thinking}` : model;
@@ -630,15 +654,23 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const cancelPendingCheckIn = (id: string, reason: string) => {
+  const rearmCheckIn = (checkIn: PendingCheckIn) => {
+    const w = roster.get(checkIn.id);
+    if (!w) return;
+    w.lastWakeAt = 0;
+    for (const breach of checkIn.breaches) delete w.alertedAt[breach.name];
+  };
+
+  const cancelPendingCheckIn = (id: string, reason: string, rearm = false) => {
     const checkIn = pendingCheckIns.get(id);
     if (!checkIn) return;
     pendingCheckIns.delete(id);
-    appendAudit("check-in-cancelled", { agentId: id, reason, checkIn });
+    if (rearm) rearmCheckIn(checkIn);
+    appendAudit("check-in-cancelled", { agentId: id, reason, rearmed: rearm, checkIn });
   };
 
-  const clearPendingCheckIns = (reason: string) => {
-    for (const id of [...pendingCheckIns.keys()]) cancelPendingCheckIn(id, reason);
+  const clearPendingCheckIns = (reason: string, rearm = false) => {
+    for (const id of [...pendingCheckIns.keys()]) cancelPendingCheckIn(id, reason, rearm);
   };
 
   const setStatus = () => {
@@ -765,11 +797,11 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (!cfg.enabled) {
-      clearPendingCheckIns("watchdog disabled before batch delivery");
+      clearPendingCheckIns("watchdog disabled before batch delivery", true);
       return;
     }
     if (cfg.action !== "wake") {
-      clearPendingCheckIns("action changed before batch delivery");
+      clearPendingCheckIns("action changed before batch delivery", true);
       return;
     }
 
@@ -782,7 +814,7 @@ export default function (pi: ExtensionAPI) {
         cancelPendingCheckIn(id, "agent was no longer running at batch delivery");
         continue;
       }
-      if (w.automaticWakeCount >= cfg.maxCheckInsPerAgent) {
+      if (w.automaticWakeCount >= cfg.maxCheckInsPerAgent && !item.capExempt) {
         cancelPendingCheckIn(id, "automatic check-in cap was reached before batch delivery");
         continue;
       }
@@ -838,6 +870,7 @@ export default function (pi: ExtensionAPI) {
     // increase the re-arm threshold with zero delivery (review finding #7).
     if (cfg.action !== "wake" && ctx?.hasUI !== true) return;
 
+    const newlyCrossedSignal = breaches.some((breach) => w.alertedAt[breach.name] === undefined);
     w.lastWakeAt = Date.now();
     for (const b of breaches) w.alertedAt[b.name] = b.value;
     const handle = rec.alias ?? rec.handle ?? w.id;
@@ -845,9 +878,14 @@ export default function (pi: ExtensionAPI) {
 
     let delivery: "notify-only" | "queued" | "merged-queued" | "suppressed-cap" = "notify-only";
     let item = snapshotCheckIn(w, rec, v, breaches, null);
+    item.capExempt = cfg.mode === "guide" && newlyCrossedSignal;
     if (cfg.action === "wake") {
       const pending = pendingCheckIns.get(w.id);
-      if (pending) {
+      const capReached = w.automaticWakeCount >= cfg.maxCheckInsPerAgent;
+      if (pending && capReached && !pending.capExempt && !item.capExempt) {
+        cancelPendingCheckIn(w.id, "automatic check-in cap was reached before pending merge");
+        delivery = "suppressed-cap";
+      } else if (pending) {
         const mergedBreaches = new Map<keyof Signals, Breach>();
         for (const breach of [...pending.breaches, ...item.breaches]) mergedBreaches.set(breach.name, breach);
         item = {
@@ -855,11 +893,12 @@ export default function (pi: ExtensionAPI) {
           breaches: [...mergedBreaches.values()],
           advice: [...new Set([...pending.advice, ...item.advice])],
           reason: pending.reason ?? item.reason,
+          capExempt: pending.capExempt || item.capExempt,
         };
         pendingCheckIns.set(w.id, item);
         delivery = "merged-queued";
         scheduleBatchFlush();
-      } else if (w.automaticWakeCount >= cfg.maxCheckInsPerAgent) {
+      } else if (capReached && !item.capExempt) {
         delivery = "suppressed-cap";
         notify(
           `watchdog: "${handle}" reached the automatic check-in cap (${cfg.maxCheckInsPerAgent}); breach stored in audit only`,
@@ -903,22 +942,25 @@ export default function (pi: ExtensionAPI) {
       // manager should force the model before launch, while this catches a
       // bypass/regression and leaves a durable record of the effective id.
       const requiredModel = cfg.models.required;
-      const effectiveModel = rec.invocation?.modelId;
-      if (
-        requiredModel &&
-        effectiveModel &&
-        effectiveModel !== requiredModel &&
-        !w.modelViolationHandled
-      ) {
+      const effectiveModel = effectiveModelId(rec);
+      const unknownExpired = !effectiveModel && v.minutes * 60_000 >= cfg.models.unknownGraceMs;
+      const modelViolationReason = requiredModel && !w.modelViolationHandled
+        ? effectiveModel && effectiveModel !== requiredModel
+          ? `effective model ${effectiveModel} != required ${requiredModel}`
+          : unknownExpired
+            ? `effective model remained unknown for ${cfg.models.unknownGraceMs / 1000}s; required ${requiredModel}`
+            : undefined
+        : undefined;
+      if (requiredModel && modelViolationReason) {
         w.modelViolationHandled = true;
         const handle = rec.alias ?? rec.handle ?? w.id;
-        const reason = `effective model ${effectiveModel} != required ${requiredModel}`;
+        const reason = modelViolationReason;
         appendAudit("model-policy-violation", {
           agentId: w.id,
           handle,
           agentType: w.type,
           description: w.description,
-          effectiveModel,
+          effectiveModel: effectiveModel ?? null,
           requiredModel,
           action: cfg.models.onViolation,
           vitals: v,
@@ -985,11 +1027,15 @@ export default function (pi: ExtensionAPI) {
     if (!isOwner) return;
     ctx = c;
     cfg = loadConfig(c.cwd, c.isProjectTrusted());
+    if (cfg.models.configurationError) {
+      notify(`watchdog: ${cfg.models.configurationError}`, "error");
+      appendAudit("configuration-error", { message: cfg.models.configurationError });
+    }
     // Roster is process-memory; a /resume mid-run of children can't be
     // reconstructed reliably, so start clean. Running agents will still be
     // caught if pi-subagents re-emits started (queued starts) — otherwise the
     // next spawn re-arms the watchdog.
-    clearPendingCheckIns("session restarted before batch delivery");
+    clearPendingCheckIns("session restarted before batch delivery", true);
     roster.clear();
     lastGlobalWakeAt = 0;
     setStatus();
@@ -998,7 +1044,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     // Record cancellations while the old session API and ownership claim are
     // still valid; custom audit entries do not enter LLM context.
-    if (isOwner) clearPendingCheckIns("session shut down before batch delivery");
+    if (isOwner) clearPendingCheckIns("session shut down before batch delivery", true);
     // Release the claim only if this activation holds it — a child instance's
     // shutdown must not delete the root's slot.
     if (isOwner && g[OWNER_KEY] === instanceId) delete g[OWNER_KEY];
@@ -1097,7 +1143,7 @@ export default function (pi: ExtensionAPI) {
         .filter(([, v]) => v != null && v > 0)
         .map(([k, v]) => `${k}≥${v}`)
         .join(", ")}`,
-      `modelPolicy: ${cfg.models.required ? `${cfg.models.required} · ${cfg.models.onViolation}` : "off"}`,
+      `modelPolicy: ${cfg.models.configurationError ? `INVALID · ${cfg.models.configurationError}` : cfg.models.required ? `${cfg.models.required} · ${cfg.models.onViolation}` : "off"}`,
       `hardStop: ${cfg.hardStop.enabled ? `tokens≥${cfg.hardStop.tokens ?? "-"} minutes≥${cfg.hardStop.minutes ?? "-"}` : "off"}`,
       `registry: ${registry ? "connected" : "NOT FOUND (pi-subagents inactive?)"}`,
       `watched: ${roster.size}`,
@@ -1115,6 +1161,10 @@ export default function (pi: ExtensionAPI) {
 
   const applyConfig = (c: { cwd: string; isProjectTrusted: () => boolean }) => {
     cfg = loadConfig(c.cwd, c.isProjectTrusted());
+    if (cfg.models.configurationError) {
+      notify(`watchdog: ${cfg.models.configurationError}`, "error");
+      appendAudit("configuration-error", { message: cfg.models.configurationError });
+    }
     // Poll and batch cadence may have changed — rebuild live timers.
     if (timer) {
       clearInterval(timer);
@@ -1125,8 +1175,8 @@ export default function (pi: ExtensionAPI) {
       clearTimeout(batchTimer);
       batchTimer = undefined;
     }
-    if (!cfg.enabled) clearPendingCheckIns("watchdog disabled by configuration reload");
-    else if (cfg.action !== "wake") clearPendingCheckIns("action changed to notify by configuration reload");
+    if (!cfg.enabled) clearPendingCheckIns("watchdog disabled by configuration reload", true);
+    else if (cfg.action !== "wake") clearPendingCheckIns("action changed to notify by configuration reload", true);
     else scheduleBatchFlush();
   };
 
@@ -1164,7 +1214,7 @@ export default function (pi: ExtensionAPI) {
       `    turns            assistant turns (transcript-derived)`,
       `    minutes          wall-clock since spawn — the only signal that catches a wedged tool`,
       `    compactions      child auto-compactions (≥1 on a small task is a red flag)`,
-      `  models           { required, onViolation } — exact effective model invariant; hard-stop or notify`,
+      `  models           { required, onViolation, unknownGraceMs } — exact live-model invariant`,
       `  hardStop         { enabled, tokens, minutes } — automatic abort, outcome reported from the RPC reply`,
       ``,
       `Docs: https://github.com/erikdarlingdata/claude-plugins/tree/main/plugins/pi-subagent-watchdog`,
