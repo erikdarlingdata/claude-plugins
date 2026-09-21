@@ -76,7 +76,10 @@ which is why it's multi-signal.
 | Best for | interactive sessions, tasks of varying size | cost-capped or unattended fleets |
 
 Check-ins are numbered per agent in both modes, so the orchestrator knows a
-first look from a re-assessment.
+first look from a re-assessment. At delivery time the watchdog checks the live
+active-tool set: when `extend_subagent` is callable, strict mode requires a real
+bounded turn extension; on older pi-subagents it truthfully asks the
+orchestrator to justify leaving the agent alone instead of naming a missing tool.
 
 ## Config
 

@@ -175,8 +175,10 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
   // Sanitize — user JSON can hold strings, zeros, negatives (review finding #4).
   const enabledRaw = m.enabled;
   const requiredModelInput = typeof m.models.required === "string" ? m.models.required.trim() : "";
-  const modelConfigurationError = requiredModelInput && !requiredModelInput.includes("/")
-    ? `models.required must be an exact provider/model id; got "${requiredModelInput}". ` +
+  const modelSlash = requiredModelInput.indexOf("/");
+  const hasProviderAndModel = modelSlash > 0 && modelSlash < requiredModelInput.length - 1;
+  const modelConfigurationError = requiredModelInput && !hasProviderAndModel
+    ? `models.required must be an exact provider/model id with non-empty segments; got "${requiredModelInput}". ` +
       `Run /watchdog status and copy the effective model string.`
     : undefined;
   return {
@@ -283,6 +285,9 @@ interface Watched {
   automaticWakeCount: number;
   /** One-shot latch for the post-spawn effective-model invariant. */
   modelViolationHandled: boolean;
+  /** Current run identity + first tick where that run was actually observed running. */
+  observedStartedAt?: number;
+  firstRunningAt?: number;
   /** First tick where the registry had no record for this id (eviction grace timer). */
   missingSince?: number;
   /** Counter snapshot at the previous check-in — lets the next one say "unchanged". */
@@ -572,7 +577,11 @@ function snapshotCheckIn(
 }
 
 /** Compact LLM-facing message; the complete structured record lives in a non-context audit entry. */
-function checkInMessage(items: PendingCheckIn[], mode: "guide" | "strict"): string {
+function checkInMessage(
+  items: PendingCheckIn[],
+  mode: "guide" | "strict",
+  turnExtensionAvailable: boolean,
+): string {
   const lines: string[] = [
     items.length === 1
       ? `[subagent-watchdog] One agent crossed a guardrail:`
@@ -592,9 +601,13 @@ function checkInMessage(items: PendingCheckIn[], mode: "guide" | "strict"): stri
   }
   if (mode === "strict") {
     lines.push(
-      `STRICT: limits are budgets. Wrap up each agent unless recent work proves convergence. ` +
-        `A continuation must call extend_subagent with a named bounded additional_turns value and reason; ` +
-        `a normal steer does not change max_turns. Check-in #2 means the extension is spent.`,
+      turnExtensionAvailable
+        ? `STRICT: limits are budgets. Wrap up unless recent work proves convergence. ` +
+          `Continuation requires extend_subagent with additional_turns (1–1000) and a concrete reason. ` +
+          `Check-in #2 means the extension is spent.`
+        : `STRICT: limits are budgets. Wrap up each agent unless recent work proves convergence. ` +
+          `If you continue it, state the evidence and explicitly choose not to send a wrap-up steer; ` +
+          `this pi-subagents version cannot extend a live max_turns ceiling. Check-in #2 ends the exception.`,
     );
   } else {
     lines.push(`Guide: on track → no action; lost → steer; runaway → wrap up. Do not spawn duplicates.`);
@@ -673,6 +686,14 @@ export default function (pi: ExtensionAPI) {
 
   const clearPendingCheckIns = (reason: string, rearm = false) => {
     for (const id of [...pendingCheckIns.keys()]) cancelPendingCheckIn(id, reason, rearm);
+  };
+
+  const canExtendTurns = () => {
+    try {
+      return pi.getActiveTools().includes("extend_subagent");
+    } catch {
+      return false;
+    }
   };
 
   const setStatus = () => {
@@ -832,7 +853,7 @@ export default function (pi: ExtensionAPI) {
       pi.sendMessage(
         {
           customType: "subagent-watchdog",
-          content: checkInMessage(items, cfg.mode),
+          content: checkInMessage(items, cfg.mode, canExtendTurns()),
           display: true,
         },
         { deliverAs: cfg.deliverAs, triggerTurn: true },
@@ -937,6 +958,11 @@ export default function (pi: ExtensionAPI) {
         if (rec.status !== "queued") untrack(id); // terminal — completion event may have raced us
         continue;
       }
+      if (w.observedStartedAt !== rec.startedAt) {
+        w.observedStartedAt = rec.startedAt;
+        w.firstRunningAt = Date.now();
+        w.modelViolationHandled = false;
+      }
       if (rec.outputFile) updateFromTranscript(w, rec.outputFile);
       const v = readVitals(w, rec);
 
@@ -945,7 +971,8 @@ export default function (pi: ExtensionAPI) {
       // bypass/regression and leaves a durable record of the effective id.
       const requiredModel = cfg.models.required;
       const effectiveModel = effectiveModelId(rec);
-      const unknownExpired = !effectiveModel && v.minutes * 60_000 >= cfg.models.unknownGraceMs;
+      const unknownElapsedMs = Date.now() - (w.firstRunningAt ?? Date.now());
+      const unknownExpired = !effectiveModel && unknownElapsedMs >= cfg.models.unknownGraceMs;
       const modelViolationReason = requiredModel && !w.modelViolationHandled
         ? effectiveModel && effectiveModel !== requiredModel
           ? `effective model ${effectiveModel} != required ${requiredModel}`
@@ -1141,6 +1168,7 @@ export default function (pi: ExtensionAPI) {
     const lines: string[] = [
       `watchdog: ${cfg.enabled ? "enabled" : "disabled"} · mode ${cfg.mode} · poll ${cfg.pollIntervalMs / 1000}s · action ${cfg.action}`,
       `delivery: per-agent cooldown ${cfg.cooldownMs / 1000}s · fleet cooldown ${cfg.globalCooldownMs / 1000}s · batch ${cfg.batchWindowMs / 1000}s · max ${cfg.maxCheckInsPerAgent}/agent · audit ${cfg.auditTrail ? "on" : "off"}`,
+      `capabilities: live turn extension ${canExtendTurns() ? "available" : "unavailable (steer/resume only)"}`,
       `signals: ${Object.entries(cfg.signals)
         .filter(([, v]) => v != null && v > 0)
         .map(([k, v]) => `${k}≥${v}`)
@@ -1343,7 +1371,7 @@ export default function (pi: ExtensionAPI) {
         pi.sendMessage(
           {
             customType: "subagent-watchdog",
-            content: checkInMessage([item], cfg.mode),
+            content: checkInMessage([item], cfg.mode, canExtendTurns()),
             display: true,
           },
           { deliverAs: cfg.deliverAs, triggerTurn: true },
