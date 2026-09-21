@@ -160,7 +160,7 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
     cooldownMs: num(m.cooldownMs, DEFAULTS.cooldownMs, 5_000),
     globalCooldownMs: num(m.globalCooldownMs, DEFAULTS.globalCooldownMs, 5_000),
     batchWindowMs: num(m.batchWindowMs, DEFAULTS.batchWindowMs, 0),
-    maxCheckInsPerAgent: num(m.maxCheckInsPerAgent, DEFAULTS.maxCheckInsPerAgent, 1),
+    maxCheckInsPerAgent: Math.floor(num(m.maxCheckInsPerAgent, DEFAULTS.maxCheckInsPerAgent, 1)),
     auditTrail: m.auditTrail !== false && m.auditTrail !== "false" && m.auditTrail !== 0,
     renotifyFactor: num(m.renotifyFactor, DEFAULTS.renotifyFactor, 1.1),
     action: m.action === "notify" ? "notify" : "wake",
@@ -269,7 +269,7 @@ interface PendingCheckIn {
   type: string;
   description: string;
   model?: string;
-  checkInNumber: number;
+  checkInNumber: number | null;
   vitals: Vitals;
   breaches: Breach[];
   advice: string[];
@@ -505,7 +505,7 @@ function snapshotCheckIn(
   rec: SubagentRecord,
   v: Vitals,
   breaches: Breach[],
-  checkInNumber: number,
+  checkInNumber: number | null,
   reason?: string,
 ): PendingCheckIn {
   return {
@@ -535,7 +535,7 @@ function checkInMessage(items: PendingCheckIn[], mode: "guide" | "strict"): stri
     const reason = item.reason ?? item.breaches.map(fmtSignal).join(", ");
     const task = item.description.length > 100 ? `${item.description.slice(0, 100)}…` : item.description;
     lines.push(
-      `- #${item.checkInNumber} "${item.handle}" (${identity}) — "${task}": ${reason}; ${vitalsLine(item.vitals)}.`,
+      `- #${item.checkInNumber ?? "?"} "${item.handle}" (${identity}) — "${task}": ${reason}; ${vitalsLine(item.vitals)}.`,
     );
     if (item.recentTools.length > 0) {
       lines.push(`  recent: ${item.recentTools.slice(-2).join(" | ")}`);
@@ -606,6 +606,17 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  const cancelPendingCheckIn = (id: string, reason: string) => {
+    const checkIn = pendingCheckIns.get(id);
+    if (!checkIn) return;
+    pendingCheckIns.delete(id);
+    appendAudit("check-in-cancelled", { agentId: id, reason, checkIn });
+  };
+
+  const clearPendingCheckIns = (reason: string) => {
+    for (const id of [...pendingCheckIns.keys()]) cancelPendingCheckIn(id, reason);
+  };
+
   const setStatus = () => {
     if (!ctx?.hasUI) return;
     const n = roster.size;
@@ -644,9 +655,7 @@ export default function (pi: ExtensionAPI) {
   const untrack = (id: unknown) => {
     if (typeof id === "string") {
       roster.delete(id);
-      if (pendingCheckIns.delete(id)) {
-        appendAudit("check-in-cancelled", { agentId: id, reason: "agent reached a terminal state before batch delivery" });
-      }
+      cancelPendingCheckIn(id, "agent reached a terminal state before batch delivery");
     }
     stopTimerIfIdle();
     setStatus();
@@ -656,6 +665,7 @@ export default function (pi: ExtensionAPI) {
     // Optimistically latched so the poll loop doesn't re-fire while the stop is
     // in flight; reset on failure so retry / manual action stays possible.
     w.hardStopped = true;
+    cancelPendingCheckIn(w.id, "hard stop superseded the queued check-in");
     const handle = rec.alias ?? rec.handle ?? w.id;
     const requestId = randomUUID();
     const replyChannel = `subagents:rpc:stop:reply:${requestId}`;
@@ -726,29 +736,72 @@ export default function (pi: ExtensionAPI) {
 
   function flushCheckInBatch() {
     batchTimer = undefined;
-    if (!isOwner || !cfg.enabled || cfg.action !== "wake") {
+    if (!isOwner) {
       pendingCheckIns.clear();
       return;
     }
+    if (!cfg.enabled) {
+      clearPendingCheckIns("watchdog disabled before batch delivery");
+      return;
+    }
+    if (cfg.action !== "wake") {
+      clearPendingCheckIns("action changed before batch delivery");
+      return;
+    }
+
     const registry = getRegistry();
-    const items = [...pendingCheckIns.values()].filter((item) => {
-      const rec = registry?.getRecord(item.id);
-      return roster.has(item.id) && rec?.status === "running";
-    });
-    pendingCheckIns.clear();
+    const items: PendingCheckIn[] = [];
+    for (const [id, item] of [...pendingCheckIns]) {
+      const rec = registry?.getRecord(id);
+      const w = roster.get(id);
+      if (!w || rec?.status !== "running") {
+        cancelPendingCheckIn(id, "agent was no longer running at batch delivery");
+        continue;
+      }
+      if (w.automaticWakeCount >= cfg.maxCheckInsPerAgent) {
+        cancelPendingCheckIn(id, "automatic check-in cap was reached before batch delivery");
+        continue;
+      }
+      pendingCheckIns.delete(id);
+      w.wakeCount += 1;
+      w.automaticWakeCount += 1;
+      item.checkInNumber = w.wakeCount;
+      items.push(item);
+    }
     if (items.length === 0) return;
 
+    try {
+      pi.sendMessage(
+        {
+          customType: "subagent-watchdog",
+          content: checkInMessage(items, cfg.mode),
+          display: true,
+        },
+        { deliverAs: cfg.deliverAs, triggerTurn: true },
+      );
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      for (const item of items) {
+        const w = roster.get(item.id);
+        if (w) {
+          w.wakeCount = Math.max(0, w.wakeCount - 1);
+          w.automaticWakeCount = Math.max(0, w.automaticWakeCount - 1);
+          w.lastWakeAt = 0;
+          for (const breach of item.breaches) delete w.alertedAt[breach.name];
+        }
+        appendAudit("check-in-cancelled", {
+          agentId: item.id,
+          reason: "pi.sendMessage rejected the batch",
+          detail,
+          checkIn: item,
+        });
+      }
+      notify(`watchdog: batched check-in delivery failed: ${detail}`, "error");
+      return;
+    }
     lastGlobalWakeAt = Date.now();
-    pi.sendMessage(
-      {
-        customType: "subagent-watchdog",
-        content: checkInMessage(items, cfg.mode),
-        display: true,
-      },
-      { deliverAs: cfg.deliverAs, triggerTurn: true },
-    );
     appendAudit("check-in-batch-delivered", {
-      agentIds: items.map((item) => item.id),
+      checkIns: items,
       count: items.length,
       mode: cfg.mode,
       deliverAs: cfg.deliverAs,
@@ -766,19 +819,29 @@ export default function (pi: ExtensionAPI) {
     const handle = rec.alias ?? rec.handle ?? w.id;
     notify(`watchdog: "${handle}" crossed ${breaches.map((b) => b.name).join(", ")} — ${vitalsLine(v)}`);
 
-    let delivery: "notify-only" | "queued" | "suppressed-cap" = "notify-only";
-    let item = snapshotCheckIn(w, rec, v, breaches, w.wakeCount + 1);
+    let delivery: "notify-only" | "queued" | "merged-queued" | "suppressed-cap" = "notify-only";
+    let item = snapshotCheckIn(w, rec, v, breaches, null);
     if (cfg.action === "wake") {
-      if (w.automaticWakeCount >= cfg.maxCheckInsPerAgent) {
+      const pending = pendingCheckIns.get(w.id);
+      if (pending) {
+        const mergedBreaches = new Map<keyof Signals, Breach>();
+        for (const breach of [...pending.breaches, ...item.breaches]) mergedBreaches.set(breach.name, breach);
+        item = {
+          ...item,
+          breaches: [...mergedBreaches.values()],
+          advice: [...new Set([...pending.advice, ...item.advice])],
+          reason: pending.reason ?? item.reason,
+        };
+        pendingCheckIns.set(w.id, item);
+        delivery = "merged-queued";
+        scheduleBatchFlush();
+      } else if (w.automaticWakeCount >= cfg.maxCheckInsPerAgent) {
         delivery = "suppressed-cap";
         notify(
           `watchdog: "${handle}" reached the automatic check-in cap (${cfg.maxCheckInsPerAgent}); breach stored in audit only`,
           "info",
         );
       } else {
-        w.wakeCount += 1;
-        w.automaticWakeCount += 1;
-        item = snapshotCheckIn(w, rec, v, breaches, w.wakeCount);
         pendingCheckIns.set(w.id, item);
         delivery = "queued";
         scheduleBatchFlush();
@@ -871,13 +934,16 @@ export default function (pi: ExtensionAPI) {
     // reconstructed reliably, so start clean. Running agents will still be
     // caught if pi-subagents re-emits started (queued starts) — otherwise the
     // next spawn re-arms the watchdog.
+    clearPendingCheckIns("session restarted before batch delivery");
     roster.clear();
-    pendingCheckIns.clear();
     lastGlobalWakeAt = 0;
     setStatus();
   });
 
   pi.on("session_shutdown", async () => {
+    // Record cancellations while the old session API and ownership claim are
+    // still valid; custom audit entries do not enter LLM context.
+    if (isOwner) clearPendingCheckIns("session shut down before batch delivery");
     // Release the claim only if this activation holds it — a child instance's
     // shutdown must not delete the root's slot.
     if (isOwner && g[OWNER_KEY] === instanceId) delete g[OWNER_KEY];
@@ -892,7 +958,6 @@ export default function (pi: ExtensionAPI) {
       clearTimeout(batchTimer);
       batchTimer = undefined;
     }
-    pendingCheckIns.clear();
     for (const u of unsubs.splice(0)) {
       try {
         u();
@@ -1004,8 +1069,9 @@ export default function (pi: ExtensionAPI) {
       clearTimeout(batchTimer);
       batchTimer = undefined;
     }
-    if (cfg.action === "wake") scheduleBatchFlush();
-    else pendingCheckIns.clear();
+    if (!cfg.enabled) clearPendingCheckIns("watchdog disabled by configuration reload");
+    else if (cfg.action !== "wake") clearPendingCheckIns("action changed to notify by configuration reload");
+    else scheduleBatchFlush();
   };
 
   const helpText = () =>
