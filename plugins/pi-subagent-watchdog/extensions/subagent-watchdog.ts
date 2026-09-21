@@ -592,7 +592,9 @@ function checkInMessage(items: PendingCheckIn[], mode: "guide" | "strict"): stri
   }
   if (mode === "strict") {
     lines.push(
-      `STRICT: limits are budgets. Wrap up each agent unless its recent work proves convergence and you grant one named bounded extension; check-in #2 means the extension is spent.`,
+      `STRICT: limits are budgets. Wrap up each agent unless recent work proves convergence. ` +
+        `A continuation must call extend_subagent with a named bounded additional_turns value and reason; ` +
+        `a normal steer does not change max_turns. Check-in #2 means the extension is spent.`,
     );
   } else {
     lines.push(`Guide: on track → no action; lost → steer; runaway → wrap up. Do not spawn duplicates.`);

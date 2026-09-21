@@ -71,7 +71,7 @@ which is why it's multi-signal.
 | | `guide` (default) | `strict` |
 | --- | --- | --- |
 | Framing | assess: on track / lost / runaway | thresholds are **budgets** |
-| Healthy agent | runs free, no action | wrap-up steer by default; continuation requires cited convergence evidence plus ONE named, bounded extension ("+2 minutes") |
+| Healthy agent | runs free, no action | wrap-up steer by default; continuation requires cited convergence evidence plus one real `extend_subagent` call with bounded additional turns |
 | Repeat check-in | re-assess with numbered context | check-in #2 = extension spent: wrap up or stop |
 | Best for | interactive sessions, tasks of varying size | cost-capped or unattended fleets |
 
