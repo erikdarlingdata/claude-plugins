@@ -119,13 +119,14 @@ Background subagents only report back when they finish — nothing wakes the
 orchestrator while one wedges on a giant grep or balloons from 200k to 2M
 tokens. This extension (auto-loaded by the install above) polls every running
 subagent's live vitals — tokens, context %, tool uses, turns, wall clock,
-compactions — and when a threshold crosses, it injects a check-in into the
-main conversation: vitals, the child's recent tool calls, and a decision
-protocol (let it run, steer it, or stop it). Two orchestrator postures:
-`guide` (assess with judgment) and `strict` (thresholds are budgets — wrap up
-by default, one evidence-cited extension max). Optional automatic hard stop
-for the truly wedged, with the outcome reported from the RPC reply rather than
-assumed.
+compactions — and batches nearby threshold crossings into one compact
+orchestrator check-in. Full structured records persist outside LLM context;
+per-agent and fleet-wide rate limits keep the watchdog from becoming its own
+token amplifier. Two orchestrator postures: `guide` (assess with judgment) and
+`strict` (thresholds are budgets — wrap up by default, one evidence-cited
+extension max). Optional automatic hard stop handles the truly wedged, with
+the outcome reported from the RPC reply rather than assumed. The CLI surfaces
+also identify each child's effective model and thinking level.
 
 Humans get a `/watchdog` panel (vitals, manual check-ins, steering, hard
 stop) plus `/watchdog help | status | config | reload` — config edits apply

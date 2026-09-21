@@ -9,10 +9,11 @@ notify the orchestrator when they *finish*. Between spawn and completion the
 orchestrator model is asleep — a child can wedge on one enormous grep, quietly
 compact and keep burning, or balloon from 200k to 2M tokens, and nothing wakes
 the parent. This extension watches every running top-level subagent's live
-vitals and, when any configurable signal crosses its threshold, injects a
-check-in message into the main conversation so the orchestrator assesses the
-child: on track, lost and needing guidance, or runaway and needing a wrap-up
-order or a stop.
+vitals and, when any configurable signal crosses its threshold, queues a
+compact, fleet-batched check-in so the orchestrator assesses the child: on
+track, lost and needing guidance, or runaway and needing a wrap-up order or a
+stop. Full structured details persist outside LLM context; per-agent and
+global rate limits bound the watchdog's own token tax.
 
 ## Install
 
@@ -37,11 +38,12 @@ Nothing to configure — sane defaults apply. Then:
 /watchdog          interactive panel when agents are running
 ```
 
-When a subagent crosses a threshold, the orchestrator receives a numbered
-check-in carrying vitals, the agent's most recent tool calls, and a decision
-protocol — plus self-diagnosing notes for the two known non-distress
-signatures (a wedged first tool call, and frozen-counters-while-composing).
-You'll see a `🐕 N` footer status while agents are watched.
+When subagents cross thresholds near one another, the orchestrator receives
+one compact message containing their numbered check-ins, vitals, effective
+model, and two most recent tool calls. The complete structured record — task,
+all five retained tool calls, thresholds, and action — is stored as a
+`subagent-watchdog-audit` custom entry that never enters LLM context. You'll
+see a `🐕 N` footer status while agents are watched.
 
 ## Signals
 
@@ -91,6 +93,10 @@ restart either way.
   "deliverAs": "steer",
   "pollIntervalMs": 15000,
   "cooldownMs": 90000,
+  "globalCooldownMs": 60000,
+  "batchWindowMs": 5000,
+  "maxCheckInsPerAgent": 2,
+  "auditTrail": true,
   "renotifyFactor": 2,
   "signals": {
     "tokens": 250000,
@@ -104,13 +110,20 @@ restart either way.
 }
 ```
 
-- `action` — `"wake"` injects the check-in for the orchestrator LLM;
-  `"notify"` is UI-toast only (breaches aren't consumed when no UI exists to
-  show them).
+- `action` — `"wake"` queues a batched orchestrator check-in; `"notify"` is
+  UI-toast only (breaches aren't consumed when no UI exists to show them).
+- `batchWindowMs` collects agents that breach near one another into one model
+  turn. `globalCooldownMs` rate-limits the whole fleet; `cooldownMs` still
+  rate-limits each agent.
+- `maxCheckInsPerAgent` caps automatic LLM wakes. Later breaches are consumed,
+  shown in the UI, and preserved in the audit trail without waking the model.
+  Human-requested `/watchdog` check-ins bypass the cap.
+- `auditTrail` persists structured `subagent-watchdog-audit` custom entries in
+  the root session JSONL. Custom entries are durable but do not participate in
+  LLM context.
 - Re-arm: after alerting, a signal re-alerts at `value × renotifyFactor`
-  (`contextPercent`: +15 pts; `compactions`: each increment); `cooldownMs`
-  floors the wake rate per agent. Values are sanitized — strings parse,
-  nonsense falls back, floors apply.
+  (`contextPercent`: +15 pts; `compactions`: each increment). Values are
+  sanitized — strings parse, nonsense falls back, floors apply.
 - `hardStop` — opt-in automatic abort. Unlike a steer (which queues behind a
   running tool call), the stop interrupts a wedged tool mid-execution. The
   outcome is reported to the orchestrator **from the RPC reply**: a failed or
@@ -125,7 +138,59 @@ restart either way.
 - **`/watchdog config` / `reload` / `status` / `help`** — settings without
   session restarts.
 - **`subagent_vitals` tool** — lets the orchestrator snapshot every running
-  agent's vitals and recent tool calls in one call.
+  agent's effective model, vitals, and recent tool calls in one call.
+
+## Token accounting and turn limits
+
+The watchdog does not make child-model calls. Its polling reads in-memory
+counters and transcript bytes. A long-lived child can still show quadratic
+*lifetime traffic* because every turn reads a growing conversation. If context
+grows by roughly `Δ` per turn, cumulative reads after `N` turns include
+`Δ × N(N+1)/2`. Prompt caching usually moves that traffic into cheaper
+`cacheRead`; a cold or invalidated cache can rewrite the large prefix as
+`cacheWrite` and make the displayed lifetime counter jump.
+
+The watchdog's `tokens` signal matches pi-subagents' display counter:
+`input + output + cacheWrite`. It deliberately excludes `cacheRead`, which is
+repeated prefix traffic rather than new work, even though providers may still
+bill it. Use context percentage for current size and cost reporting for spend.
+
+Containment belongs at the agent runner as well as the observer. Configure a
+real ceiling in `~/.pi/agent/subagents.json`:
+
+```json
+{
+  "defaultMaxTurns": 30,
+  "graceTurns": 3,
+  "maxConcurrent": 8,
+  "showCost": true,
+  "showModel": true
+}
+```
+
+Pi-subagents asks the child to wrap at `defaultMaxTurns` and aborts after the
+grace turns if it ignores the order. `maxConcurrent` reduces fleet stampedes;
+it does not by itself reduce the work assigned. `showModel` adds the effective
+model and thinking level to live CLI/widget rows. Agent results and the
+watchdog's own surfaces also report the effective model.
+
+## Forensic trail
+
+- Automatic/manual breaches and interventions: non-context
+  `subagent-watchdog-audit` entries in the root session under
+  `~/.pi/agent/sessions/`.
+- LLM wakes and hard-stop reports: `custom_message` entries with
+  `customType: "subagent-watchdog"`; these participate in context until
+  compacted.
+- Child conversation copy: pi-subagents' temporary `.output` JSONL under the
+  OS temp directory when `outputTranscript` is enabled.
+- Full child session: a normal persisted Pi session when pi-subagents'
+  `rememberAgents` is enabled (the default).
+- Footer state, UI toasts, poll samples, and event-bus messages are ephemeral.
+
+Turning off `.output` does not save model tokens; it only removes a temporary
+forensic source and disables the watchdog's transcript-derived turns/recent
+calls.
 
 ## How it works
 
@@ -138,9 +203,12 @@ restart either way.
   tailing) for the two things the record doesn't carry: derived turn count and
   the most recent tool calls.
 - `subagents:compacted` triggers an immediate evaluation.
-- On breach: `pi.sendMessage({...}, { deliverAs: "steer", triggerTurn: true })`
-  wakes the orchestrator; hard stops go through the `subagents:rpc:stop` bus
-  verb with reply-verified reporting.
+- On breach: complete details go to `pi.appendEntry(...)`; eligible breaches
+  enter a fleet batch. One compact `pi.sendMessage(...)` wakes the orchestrator
+  after the batch window and global cooldown. Later per-agent breaches beyond
+  the automatic cap remain audit/UI-only.
+- Hard stops go through the `subagents:rpc:stop` bus verb with reply-verified
+  reporting.
 - A root-ownership claim (`Symbol.for("subagent-watchdog:owner")`, mirroring
   pi-subagents' own manager-key pattern) keeps child sessions — which re-run
   extension factories in the same process — fully dormant, so check-ins can
