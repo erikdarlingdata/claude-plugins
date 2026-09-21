@@ -80,6 +80,12 @@ interface WatchdogConfig {
   /** Delivery mode for the wake message. "steer" interrupts after the current tool batch. */
   deliverAs: "steer" | "followUp";
   signals: Signals;
+  models: {
+    /** Exact effective provider/model id required for every watched top-level agent. */
+    required?: string | null;
+    /** A mismatch is either UI/audit-only or immediately stopped. */
+    onViolation: "hard-stop" | "notify";
+  };
   hardStop: {
     enabled: boolean;
     tokens?: number | null;
@@ -106,6 +112,10 @@ const DEFAULTS: WatchdogConfig = {
     turns: 30,
     minutes: 10,
     compactions: 1,
+  },
+  models: {
+    required: null,
+    onViolation: "hard-stop",
   },
   hardStop: {
     enabled: false,
@@ -150,8 +160,13 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
     ...global,
     ...project,
     signals: { ...DEFAULTS.signals, ...global?.signals, ...project?.signals },
+    models: { ...DEFAULTS.models, ...global?.models, ...project?.models },
     hardStop: { ...DEFAULTS.hardStop, ...global?.hardStop, ...project?.hardStop },
-  } as Record<string, unknown> & { signals: Record<string, unknown>; hardStop: Record<string, unknown> };
+  } as Record<string, unknown> & {
+    signals: Record<string, unknown>;
+    models: Record<string, unknown>;
+    hardStop: Record<string, unknown>;
+  };
   // Sanitize — user JSON can hold strings, zeros, negatives (review finding #4).
   const enabledRaw = m.enabled;
   return {
@@ -173,6 +188,12 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
       turns: optNum(m.signals.turns, DEFAULTS.signals.turns),
       minutes: optNum(m.signals.minutes, DEFAULTS.signals.minutes),
       compactions: optNum(m.signals.compactions, DEFAULTS.signals.compactions),
+    },
+    models: {
+      required: typeof m.models.required === "string" && m.models.required.trim()
+        ? m.models.required.trim()
+        : null,
+      onViolation: m.models.onViolation === "notify" ? "notify" : "hard-stop",
     },
     hardStop: {
       enabled: m.hardStop.enabled === true,
@@ -248,6 +269,8 @@ interface Watched {
   wakeCount: number;
   /** Automatic LLM wakes only — bounded by maxCheckInsPerAgent. */
   automaticWakeCount: number;
+  /** One-shot latch for the post-spawn effective-model invariant. */
+  modelViolationHandled: boolean;
   /** First tick where the registry had no record for this id (eviction grace timer). */
   missingSince?: number;
   /** Counter snapshot at the previous check-in — lets the next one say "unchanged". */
@@ -292,6 +315,7 @@ function newWatched(id: string, type: string, description: string): Watched {
     hardStopped: false,
     wakeCount: 0,
     automaticWakeCount: 0,
+    modelViolationHandled: false,
   };
 }
 
@@ -875,6 +899,37 @@ export default function (pi: ExtensionAPI) {
       if (rec.outputFile) updateFromTranscript(w, rec.outputFile);
       const v = readVitals(w, rec);
 
+      // Model policy is a post-spawn invariant, not the primary gate: the
+      // manager should force the model before launch, while this catches a
+      // bypass/regression and leaves a durable record of the effective id.
+      const requiredModel = cfg.models.required;
+      const effectiveModel = rec.invocation?.modelId;
+      if (
+        requiredModel &&
+        effectiveModel &&
+        effectiveModel !== requiredModel &&
+        !w.modelViolationHandled
+      ) {
+        w.modelViolationHandled = true;
+        const handle = rec.alias ?? rec.handle ?? w.id;
+        const reason = `effective model ${effectiveModel} != required ${requiredModel}`;
+        appendAudit("model-policy-violation", {
+          agentId: w.id,
+          handle,
+          agentType: w.type,
+          description: w.description,
+          effectiveModel,
+          requiredModel,
+          action: cfg.models.onViolation,
+          vitals: v,
+        });
+        notify(`watchdog: model policy violation for "${handle}": ${reason}`, "error");
+        if (cfg.models.onViolation === "hard-stop") {
+          hardStop(w, rec, v, reason);
+          continue;
+        }
+      }
+
       // Hard stop first — it supersedes a check-in.
       if (cfg.hardStop.enabled && !w.hardStopped) {
         const ht = cfg.hardStop.tokens;
@@ -1042,6 +1097,7 @@ export default function (pi: ExtensionAPI) {
         .filter(([, v]) => v != null && v > 0)
         .map(([k, v]) => `${k}≥${v}`)
         .join(", ")}`,
+      `modelPolicy: ${cfg.models.required ? `${cfg.models.required} · ${cfg.models.onViolation}` : "off"}`,
       `hardStop: ${cfg.hardStop.enabled ? `tokens≥${cfg.hardStop.tokens ?? "-"} minutes≥${cfg.hardStop.minutes ?? "-"}` : "off"}`,
       `registry: ${registry ? "connected" : "NOT FOUND (pi-subagents inactive?)"}`,
       `watched: ${roster.size}`,
@@ -1108,6 +1164,7 @@ export default function (pi: ExtensionAPI) {
       `    turns            assistant turns (transcript-derived)`,
       `    minutes          wall-clock since spawn — the only signal that catches a wedged tool`,
       `    compactions      child auto-compactions (≥1 on a small task is a red flag)`,
+      `  models           { required, onViolation } — exact effective model invariant; hard-stop or notify`,
       `  hardStop         { enabled, tokens, minutes } — automatic abort, outcome reported from the RPC reply`,
       ``,
       `Docs: https://github.com/erikdarlingdata/claude-plugins/tree/main/plugins/pi-subagent-watchdog`,

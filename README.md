@@ -125,8 +125,10 @@ per-agent and fleet-wide rate limits keep the watchdog from becoming its own
 token amplifier. Two orchestrator postures: `guide` (assess with judgment) and
 `strict` (thresholds are budgets — wrap up by default, one evidence-cited
 extension max). Optional automatic hard stop handles the truly wedged, with
-the outcome reported from the RPC reply rather than assumed. The CLI surfaces
-also identify each child's effective model and thinking level.
+the outcome reported from the RPC reply rather than assumed. An optional exact
+model invariant hard-stops any top-level child that bypasses the manager's
+pre-spawn model policy. The CLI surfaces also identify each child's effective
+model and thinking level.
 
 Humans get a `/watchdog` panel (vitals, manual check-ins, steering, hard
 stop) plus `/watchdog help | status | config | reload` — config edits apply

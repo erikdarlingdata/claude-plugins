@@ -106,6 +106,7 @@ restart either way.
     "minutes": 10,
     "compactions": 1
   },
+  "models": { "required": null, "onViolation": "hard-stop" },
   "hardStop": { "enabled": false, "tokens": 1500000, "minutes": 45 }
 }
 ```
@@ -124,6 +125,11 @@ restart either way.
 - Re-arm: after alerting, a signal re-alerts at `value × renotifyFactor`
   (`contextPercent`: +15 pts; `compactions`: each increment). Values are
   sanitized — strings parse, nonsense falls back, floors apply.
+- `models.required` — optional exact effective `provider/model-id` invariant.
+  A mismatch is written to the structured audit and either hard-stopped or
+  shown as an error notification (`onViolation`). This is defense-in-depth:
+  primary model coercion belongs in pi-subagents before the child launches.
+  Workflow/nested children remain invisible to the watchdog.
 - `hardStop` — opt-in automatic abort. Unlike a steer (which queues behind a
   running tool call), the stop interrupts a wedged tool mid-execution. The
   outcome is reported to the orchestrator **from the RPC reply**: a failed or
@@ -217,7 +223,9 @@ calls.
 ## Limitations
 
 - Top-level agents only: workflow/nested children are owned by their parents
-  and invisible to the registry by design.
+  and invisible to the registry by design. Model policy must therefore also be
+  enforced pre-spawn by the subagent manager; the watchdog is the regression
+  alarm, not the complete gate.
 - Turn count and recent tools need the `.output` transcript
   (pi-subagents' `outputTranscript`, on by default); other signals work
   without it.
