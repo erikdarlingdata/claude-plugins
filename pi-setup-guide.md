@@ -1,9 +1,21 @@
 # Pi setup guide (for Claude Code ex-pats)
 
-Distilled from several setup sessions. Total time is about 15 minutes, including npm commands.
+A short path from a clean machine to a comfortable Pi daily driver, followed by
+optional operations and extension recipes.
 
-Pi's philosophy is the opposite of Claude Code's: it ships minimal and expects
-you to extend it. It's sort of like Arch Linux
+**Last verified:** 2026-09-21 · **Pi:** 0.86.1 · **Primary test setup:** macOS,
+Ghostty, npm 11.17.0, OpenRouter. Core Pi works on Linux and Windows too; macOS-
+and terminal-specific steps are labeled.
+
+The **15-minute install checklist** is: §1, the model-picker basics at the start
+of §2, §3, one profile from §6, only the binaries that profile needs in §7, and
+§8. Sections 4–5 and 9–10 are short reference material for the first few days;
+sections 11–15 cover maintenance, recovery, watchdogs, recipes, and troubleshooting.
+Reading every optional note is intentionally longer than 15 minutes.
+
+Pi deliberately ships a small core and expects you to choose extensions. Treat
+those extensions like executable dependencies, not editor themes: they run with
+your user permissions.
 
 ---
 
@@ -11,1476 +23,620 @@ you to extend it. It's sort of like Arch Linux
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+cd /path/to/a/project
 pi
 ```
 
-On first run, use `/login` to authenticate a provider (it supports Anthropic subscriptions,
-OpenRouter, Copilot, Codex, and local models via `/llama`). API keys can also
-live in env vars or `~/.pi/agent/auth.json`.
+Pi does not require npm lifecycle scripts for a normal install.
 
-## 2. Default model and thinking level
+On first run, use `/login` to authenticate. Built-in subscription logins include
+ChatGPT Plus/Pro (Codex), Claude Pro/Max, GitHub Copilot, and others. API-key
+providers can use `/login`, environment variables, or `~/.pi/agent/auth.json`.
+That file contains secrets, is created mode `0600`, and must never be committed.
 
-Two ways: interactive is easiest:
+Try one request before installing anything else:
 
-- `/model` → highlight your model → **Ctrl+S** saves it as the startup default
-- `/thinking` → pick a level → **Ctrl+S** saves it
+```text
+Summarize this repository and tell me how to run its checks.
+```
 
-Or edit `~/.pi/agent/settings.json` directly:
+## 2. Models, reasoning, cost, and OpenAI/Codex notes
+
+Interactive setup is safest because it uses the live model catalog:
+
+- **Ctrl+L** or `/model` → select a model → **Ctrl+S** saves it as the startup default
+- `/thinking` → select a level → **Ctrl+S** saves it
+- Shift+Tab cycles the current thinking level
+- Ctrl+P / Shift+Ctrl+P cycles your `/scoped-models` shortlist
+
+Thinking levels are:
+
+```text
+off | minimal | low | medium | high | xhigh | max
+```
+
+Only levels supported by the selected model appear or take effect. Project-local
+`.pi/settings.json` recursively overrides global settings. Some settings — such
+as `defaultProjectTrust`, `cacheWarming`, and `httpProxy` — are global-only.
+
+A direct JSON example, using one tested environment rather than a universal
+recommendation:
 
 ```json
 {
   "defaultProvider": "openrouter",
   "defaultModel": "anthropic/claude-fable-5",
   "defaultThinkingLevel": "xhigh",
-  "modelThinkingLevels": { "openrouter/anthropic/claude-opus-5": "xhigh" }
+  "modelThinkingLevels": {
+    "openrouter/~anthropic/claude-opus-latest": "xhigh"
+  }
 }
 ```
 
-Thinking levels: `off | minimal | low | medium | high | xhigh | max`.
-Project-local `.pi/settings.json` overrides global. `/settings` edits common
-options in-app.
+### OpenAI / Codex users
 
-**Habit-breaker:** Shift+Tab cycles *thinking level* in pi, not mode like Claude (manual/auto/plan, etc.).
+There are three distinct routes. They can expose different catalogs, quotas,
+cache behavior, and prices even when model names look similar.
 
-## 3. Approvals: there's only one prompt to configure
+| Route | Setup | Billing / limits |
+| --- | --- | --- |
+| ChatGPT subscription | `/login` → ChatGPT Plus/Pro (Codex) | Codex subscription route; officially endorsed by OpenAI |
+| Direct OpenAI API | `/login` with an API key, or `OPENAI_API_KEY` | OpenAI API billing and quotas |
+| OpenRouter | `/login` → OpenRouter | OpenRouter routing, billing, and provider behavior |
 
-Pi has **no per-command approval gate**: `bash`/`edit`/`write` run immediately
-with your user permissions (no sandbox; see `docs/security.md`). The only
-prompt is **project trust**: whether to load a repo's `.pi/` settings and
-extensions (which are arbitrary TypeScript).
+Pi maps `/thinking` levels to OpenAI reasoning effort where supported. Do not
+invent Anthropic-style thinking-token budgets for direct OpenAI models; use the
+catalog's supported effort levels unless a custom compatible endpoint explicitly
+requires a token-budget field.
 
-- Recommended: leave `defaultProjectTrust: "ask"` and run `/trust` once per
-  directory you actually work in (it can trust the parent folder too: one
-  `/trust` covers your whole projects dir). Decisions persist in
-  `~/.pi/agent/trust.json`.
-- `"always"` kills all prompts but means any cloned repo can run its
-  own extensions. Only do this if you never open untrusted repos.
-- Per-run: `pi -a` (trust) / `pi -na` (ignore project files).
+Direct OpenAI GPT-5.6 Sol, Terra, and Luna intentionally default to a **272K**
+context window to remain inside OpenAI's short-context pricing tier. A larger
+window is an advanced opt-in:
 
-## 4. Claude Code → pi translation (built in, no extension needed)
+```json
+{
+  "providers": {
+    "openai": {
+      "modelOverrides": {
+        "gpt-5.6-sol": { "contextWindow": 1050000 }
+      }
+    }
+  }
+}
+```
 
-| Claude Code | pi |
+Above 272K total input, OpenAI applies long-context rates to the whole request,
+not just the excess. Apply the same override to Terra or Luna only when the task
+needs it.
+
+`PI_PROVIDER` and `PI_MODEL` report the model Pi selected. A router can choose a
+different concrete backend; when attribution matters, inspect the assistant
+message's `responseModel` in the session JSONL.
+
+Leave `transport: "auto"` unless troubleshooting. `transport: "sse"` is the
+conservative fallback when a proxy or network path breaks WebSockets.
+
+### Watch cost and cache behavior
+
+The footer shows input, output, cache-read, cache-write, cost, and context usage.
+`/session` shows totals and the current cache-warming decision. Temporarily set
+`showCacheMissNotices: true` when investigating expensive misses.
+
+`cacheWarming` is `off`, `streaming`, or `idle` and defaults to `streaming`.
+Direct OpenAI currently has no built-in cache-lifetime metadata for Pi's warmer,
+so warming may report unavailable even when provider-side prompt caching exists.
+`PI_CACHE_RETENTION=long` requests longer retention where supported; inspect
+`/session` rather than assuming it took effect.
+
+## 3. Trust, approvals, and safer modes
+
+Pi has no built-in per-command approval gate. `bash`, `edit`, and `write` run
+immediately with your user permissions. Project trust controls which project
+resources load; it is not a sandbox.
+
+Recommended defaults:
+
+- Keep `defaultProjectTrust: "ask"`.
+- Use `/trust` in directories you control. The UI can trust the immediate parent,
+  which covers a projects directory when repositories are direct children.
+- Restart after `/trust`; it writes `trust.json` for future sessions but does not
+  retroactively load resources skipped by the current session.
+- Use `pi -a` to trust project resources for one run or `pi -na` to ignore them.
+
+Trust protects project `.pi/settings.json`, `.pi/extensions|skills|prompts|themes`,
+`.pi/SYSTEM.md`, `.pi/APPEND_SYSTEM.md`, project packages, and project
+`.agents/skills`. **Context files still load regardless of trust**:
+`AGENTS.override.md`, `AGENTS.md`, and `CLAUDE.md` can all influence the model.
+Treat instructions in an untrusted clone as untrusted input.
+
+Non-interactive modes cannot ask. With no saved decision,
+`defaultProjectTrust: "ask"` and `"never"` skip protected project resources;
+pass `--approve` explicitly when automation requires them.
+
+Useful containment and recovery modes:
+
+```bash
+# Read-only built-ins
+pi --tools read,grep,find,ls
+
+# Start without any discovered extensions
+pi --no-extensions
+
+# Disable all discovered extensions, then load exactly one
+pi --no-extensions -e ./extension.ts
+```
+
+For untrusted or unattended work, use a container, VM, micro-VM, or other OS
+boundary with minimal files, credentials, and network access. Project trust does
+not replace isolation.
+
+Bundled examples worth knowing:
+
+- `permission-gate.ts`
+- `confirm-destructive.ts`
+- `dirty-repo-guard.ts`
+- `protected-paths.ts`
+
+## 4. Claude Code → Pi translation
+
+| Claude Code | Pi |
 | --- | --- |
-| `CLAUDE.md` | Reads `AGENTS.md` **or** `CLAUDE.md` natively (cwd + parents + `~/.pi/agent/AGENTS.md`) |
-| Custom slash commands | Prompt templates: `.md` files in `~/.pi/agent/prompts/` or `.pi/prompts/` |
+| `CLAUDE.md` | Loads `AGENTS.override.md`, otherwise `AGENTS.md` or `CLAUDE.md`, from cwd and parents; global `~/.pi/agent/AGENTS.md` also loads |
+| Custom slash commands | Prompt templates in `~/.pi/agent/prompts/` or `.pi/prompts/` |
 | Skills | Native `SKILL.md` support |
-| `!` shell escape | `!cmd` (output goes to model), `!!cmd` (output stays local). Gotcha: pi doesn't *wake* the agent when the command finishes — output sits in context until your next message. `bang-notify.ts` (§14) closes that gap, Claude-style, plus autocomplete for common commands |
-| Copy-on-select + "copied" confirmation | Ships in **fullscreen** TUI mode (off by default): `tuiMode: "fullscreen"` copies your drag-selection and flashes `Copied!`. `Ctrl+X` copies the last reply outright (§5) |
-| Clicking a link | **Cmd+click** on macOS (Ctrl+click is the Linux/Windows binding, and the right-click gesture on macOS). Labels become clickable with `clickable-links.ts` (§5) |
-| `/compact`, `--continue`, `--resume` | `/compact`, `pi -c`, `pi -r`, `pi --session <partial-id>` |
-| `/btw` side questions | Type while it works: **Enter** = steering (injected after current tool call), **Alt+Enter** = follow-up (after all work). Or `@agentname question` routes to a subagent without touching main context |
-| Checkpoints / rewind | Session **tree**: double-Escape jumps to any earlier point; `/fork` branches; add `git-checkpoint.ts` (below) to restore code state too |
-| MCP | `npm:pi-mcp-adapter` extension |
+| `!` shell escape | `!cmd` sends output to the model; `!!cmd` stays local. Stock Pi does not trigger a model turn when it finishes; the optional `bang-notify.ts` recipe in §14 does |
+| Copy-on-select | Fullscreen mode copies mouse selection and flashes confirmation; Ctrl+X copies the last assistant reply |
+| Links | Bare URLs are terminal-detected; OSC 8 labels are available through the optional `clickable-links.ts` recipe |
+| `/compact`, continue, resume | `/compact`, `pi -c`, `pi -r`, `pi --session <path-or-id>` |
+| `/btw` | Type while Pi works: Enter steers after the current tool call; Alt+Enter queues a follow-up |
+| Checkpoints / rewind | Double-Escape or `/tree`; `/fork` and `/clone` branch session history |
+| MCP | `pi-mcp-adapter` package |
+| Ephemeral chat | `pi --no-session` |
 
-## 5. TUI ergonomics and Claude Code muscle memory
+## 5. Terminal ergonomics
 
-The things that cost an ex-pat the most time aren't missing from pi — they're
-bound differently, or off by default.
+### Fullscreen and copying
 
-### Copy-on-select, and the "copied" confirmation
-
-Claude Code copied your mouse selection and flashed a confirmation. pi does the
-same, but only in **fullscreen** TUI mode, which is not the default. Try it for
-one session:
+Try fullscreen for one session:
 
 ```bash
 pi --tui-mode fullscreen
 ```
 
-Keep it via `/settings` (applies immediately) or `"tuiMode": "fullscreen"` in
-`settings.json`. `fullscreenCopyOnSelect` is already `true`, so there is nothing
-else to set: dragging selects and copies, and pi flashes `Copied!` in the corner.
-The flash is deliberately brief on success and noticeably longer on
-`Copy failed` — so "I didn't see anything" means it worked. Set it `false` and
-selections stay highlighted until you press `Ctrl+X`.
+Persist it through `/settings` or:
 
-In the default `regular` mode pi deliberately does **not** capture the mouse
-("the terminal owns its scrollback"), so selection belongs to your terminal.
-Ghostty's own `copy-on-select` already defaults to `true` on macOS — silently,
-which is why it's easy to assume it's broken. If it isn't landing where `Cmd+V`
-reads, make it explicit in `~/.config/ghostty/config`:
-
-```
-copy-on-select = clipboard
+```json
+{ "tuiMode": "fullscreen" }
 ```
 
-Fullscreen trade-offs worth knowing: it's flagged **experimental**, and pi owns
-the screen, so your terminal's native scrollback, search, and selection give way
-to pi's own scroll region. `fullscreenExitOutput` (default `transcript`) decides
-what's printed when you exit, and `fullscreenScrollbar` tunes the scrollbar
-column.
+`fullscreenCopyOnSelect` defaults to `true`. Ctrl+X copies the last assistant
+message, the selected `/tree` message, or an active fullscreen selection when
+auto-copy is disabled.
 
-**For whole replies, `Ctrl+X` beats dragging.** `app.message.copy` copies the
-last assistant message — or the selected one while you're in `/tree` — with no
-selection at all. It flashes in fullscreen and writes a status line in regular
-mode.
+Fullscreen is still marked experimental. Pi owns the screen, so terminal-native
+scrollback/search/selection give way to Pi's scroll region.
 
-### Clicking links
+### Ghostty and modified Enter keys
 
-**Cmd+click on macOS.** Ctrl+click is the right-click/context-menu gesture
-there, so it looks like link-opening is broken; Ctrl+click is the
-Linux/Windows binding.
+Ghostty config locations:
 
-Bare URLs are already clickable through terminal auto-detection, and pi renders
-markdown links with the URL visible (`mdLink` and `mdLinkUrl` are separate theme
-colors), so those are clickable too. What *isn't* clickable out of the box is a
-link's **label**. pi has the machinery — it emits OSC 8 hyperlinks for login
-URLs and exports `hyperlink(text, url)` from `@earendil-works/pi-tui` — it just
-never applies it to assistant markdown. `clickable-links.ts` below closes that
-gap, and in fullscreen mode a plain click (no modifier) opens links.
+- macOS: `~/Library/Application Support/com.mitchellh.ghostty/config`
+- Linux: `~/.config/ghostty/config`
 
-Inside tmux, OSC 8 needs passthrough: set `PI_HYPERLINKS=1` (it overrides
-detection with `1`, `0`, or `auto`) and enable tmux's `allow-passthrough`.
+Useful mapping:
 
-### Fullscreen's silent trap: raw terminal escapes
-
-Worth knowing before you write your own extension, because it cost us an
-afternoon. An extension that emits terminal escape sequences by writing to
-`process.stdout` directly works in regular mode and **silently does nothing** in
-fullscreen mode, where pi owns stdout and repaints whole frames. No error, no
-warning — the feature just stops, and the last value it managed to write stays
-frozen on screen forever.
-
-- For the **window/tab title** there is a supported API: `ctx.ui.setTitle()`.
-  Use it; `tab-status.ts` below does.
-- For **desktop notifications** there is none. pi's bundled `notify.ts` example
-  posts OSC 777 / OSC 99 escapes, so it goes quiet in fullscreen. On macOS the
-  mode-independent fix is to shell out, passing text as argv so quotes and
-  backslashes in a title can't break the script or inject anything:
-
-```typescript
-await pi.exec("osascript", [
-  "-e", "on run argv",
-  "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
-  "-e", "end run",
-  "--", body, title,
-]);
+```text
+keybind = alt+backspace=text:\x1b\x7f
 ```
 
-  (OSC 777 remains the better choice over SSH, where it surfaces on the machine
-  running your terminal rather than the remote host.)
+Remove the old Claude Code mapping below unless another tool still needs it:
 
-An extension **cannot** detect which TUI mode it is in — `ctx.mode` is `"tui"`
-for both and nothing exposes `tuiMode` — so prefer a transport that works either
-way over branching on the mode. And give any write-only output path a test
-command (`/tabstatus`, `/notifytest`, `/linktest` all exist for this reason):
-when a channel fails silently, the only way to tell "wrong state" from "correct
-state that never arrived" is an affordance that reports what the extension
-believes.
-
-### Timestamps on replies
-
-`/tree` plus **shift+t** natively toggles timestamps on tree labels, and every
-message already carries a `timestamp` in the session file — the live transcript
-just never shows one. `reply-timestamps.ts` below adds a dim stamp after each
-completed reply and a live footer clock, which is what you want on a tab you
-walked away from.
-
-### `reply-timestamps.ts`
-
-Save as `~/.pi/agent/extensions/reply-timestamps.ts`. Stamps are written with
-`pi.appendEntry` + `registerEntryRenderer`, which is pi's channel for durable
-TUI-only content — custom entries never enter LLM context, so this costs nothing
-in tokens and survives `/resume`. Optional config at
-`~/.pi/agent/reply-timestamps.json`:
-`{ "stampTranscript": true, "showFooter": true, "showDuration": true, "clock": "24h" }`
-(`clock` accepts `24h`, `12h`, or `iso`).
-
-```typescript
-/**
- * reply-timestamps — show when the agent last replied.
- *
- * pi stores a `timestamp` on every message but never displays one in the live
- * transcript (only `/tree` + shift+t shows them, for history navigation). Two
- * surfaces here:
- *
- *   1. A dim stamp line appended after each completed reply:
- *        ↩ replied 14:32:05 · took 47s
- *      Written with pi.appendEntry + registerEntryRenderer, so it is TUI-only
- *      and costs NOTHING in LLM context (custom entries don't participate),
- *      and it persists — resumed sessions still show their old stamps.
- *
- *   2. A live footer clock, so a tab you walked away from answers "when did
- *      this finish?" at a glance:
- *        ↩ 14:32:05 (3m ago)
- *
- * Timing is measured from the first agent_start of a reply to agent_settled,
- * so "took" reflects the whole reply including tool calls, retries and
- * auto-compaction — not just the last LLM call.
- *
- * Config (optional): ~/.pi/agent/reply-timestamps.json
- *   {
- *     "enabled": true,
- *     "stampTranscript": true,   // the in-transcript stamp line
- *     "showFooter": true,        // the footer clock
- *     "showDuration": true,      // "· took 47s"
- *     "clock": "24h",            // "24h" | "12h" | "iso"
- *     "footerRefreshMs": 30000   // how often the footer's "(3m ago)" re-renders
- *   }
- */
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
-
-const ENTRY_TYPE = "reply-timestamp";
-
-interface Config {
-  enabled: boolean;
-  stampTranscript: boolean;
-  showFooter: boolean;
-  showDuration: boolean;
-  clock: "24h" | "12h" | "iso";
-  footerRefreshMs: number;
-}
-
-function loadConfig(): Config {
-  const defaults: Config = {
-    enabled: true,
-    stampTranscript: true,
-    showFooter: true,
-    showDuration: true,
-    clock: "24h",
-    footerRefreshMs: 30_000,
-  };
-  try {
-    const dir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-    const raw = JSON.parse(readFileSync(join(dir, "reply-timestamps.json"), "utf8"));
-    const clock = raw.clock === "12h" || raw.clock === "iso" ? raw.clock : defaults.clock;
-    const refresh = Number(raw.footerRefreshMs);
-    return {
-      enabled: raw.enabled !== false,
-      stampTranscript: raw.stampTranscript !== false,
-      showFooter: raw.showFooter !== false,
-      showDuration: raw.showDuration !== false,
-      clock,
-      footerRefreshMs: Number.isFinite(refresh) ? Math.max(1_000, refresh) : defaults.footerRefreshMs,
-    };
-  } catch {
-    return defaults;
-  }
-}
-
-function formatClock(at: number, clock: Config["clock"]): string {
-  const d = new Date(at);
-  if (clock === "iso") return d.toISOString().replace("T", " ").slice(0, 19);
-  return d.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: clock === "12h",
-  });
-}
-
-/** Compact duration: 850ms / 47s / 3m12s / 1h04m. */
-function formatDuration(ms: number): string {
-  if (ms < 1_000) return `${Math.round(ms)}ms`;
-  const total = Math.round(ms / 1_000);
-  if (total < 60) return `${total}s`;
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  if (m < 60) return s === 0 ? `${m}m` : `${m}m${String(s).padStart(2, "0")}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h${String(m % 60).padStart(2, "0")}m`;
-}
-
-/** Coarse age for the footer: just now / 3m ago / 2h ago / 14:32:05 once stale. */
-function formatAge(at: number, now: number, clock: Config["clock"]): string {
-  const secs = Math.max(0, Math.round((now - at) / 1_000));
-  if (secs < 10) return "just now";
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return formatClock(at, clock);
-}
-
-export default function (pi: ExtensionAPI) {
-  let cfg = loadConfig();
-  let ctx: ExtensionContext | undefined;
-  /** First agent_start of the current reply; undefined while idle. */
-  let replyStartedAt: number | undefined;
-  /** Last completed reply, for the footer. */
-  let lastReplyAt: number | undefined;
-  let footerTimer: ReturnType<typeof setInterval> | undefined;
-
-  const updateFooter = () => {
-    if (!ctx?.hasUI || !cfg.enabled || !cfg.showFooter) return;
-    if (lastReplyAt === undefined) {
-      ctx.ui.setStatus("reply-clock", undefined);
-      return;
-    }
-    const at = formatClock(lastReplyAt, cfg.clock);
-    const age = formatAge(lastReplyAt, Date.now(), cfg.clock);
-    ctx.ui.setStatus("reply-clock", `↩ ${at} (${age})`);
-  };
-
-  const stopFooterTimer = () => {
-    if (footerTimer) {
-      clearInterval(footerTimer);
-      footerTimer = undefined;
-    }
-  };
-
-  pi.registerEntryRenderer(ENTRY_TYPE, (entry, _opts, theme) => {
-    const data = (entry.data ?? {}) as { at?: number; durationMs?: number };
-    if (typeof data.at !== "number") return new Text("", 0, 0);
-    // Rendered from persisted entry data, not from "now" — a resumed session
-    // shows when each reply actually landed.
-    let line = `↩ replied ${formatClock(data.at, cfg.clock)}`;
-    if (cfg.showDuration && typeof data.durationMs === "number") {
-      line += ` · took ${formatDuration(data.durationMs)}`;
-    }
-    return new Text(theme.fg("dim", line), 0, 0);
-  });
-
-  pi.on("session_start", async (_event, c) => {
-    cfg = loadConfig();
-    // TUI only. This also keeps subagent sessions out: they re-run extension
-    // factories in the same process (pi-subagents binds extensions into each
-    // child), and neither a footer nor a stamp means anything there.
-    if (c.mode !== "tui") return;
-    ctx = c;
-    replyStartedAt = undefined;
-    // Restore the footer from history so a resumed session doesn't read as
-    // "never replied" until the next turn.
-    lastReplyAt = undefined;
-    for (const entry of c.sessionManager.getEntries()) {
-      if (entry.type === "custom" && entry.customType === ENTRY_TYPE) {
-        const at = (entry.data as { at?: number } | undefined)?.at;
-        if (typeof at === "number") lastReplyAt = at;
-      }
-    }
-    updateFooter();
-    stopFooterTimer();
-    if (cfg.enabled && cfg.showFooter) {
-      footerTimer = setInterval(updateFooter, cfg.footerRefreshMs);
-      footerTimer.unref?.();
-    }
-  });
-
-  pi.on("agent_start", async () => {
-    if (!cfg.enabled) return;
-    // First start of this reply wins: agent_start fires again for auto-retry
-    // and post-compaction continuation, and those are part of the same reply.
-    replyStartedAt ??= Date.now();
-  });
-
-  // agent_settled, not agent_end: pi may still auto-retry, auto-compact, or
-  // drain queued follow-ups after agent_end. Settled is when the agent has
-  // actually finished replying — the moment worth stamping.
-  pi.on("agent_settled", async () => {
-    if (!cfg.enabled) return;
-    const at = Date.now();
-    const durationMs = replyStartedAt === undefined ? undefined : at - replyStartedAt;
-    replyStartedAt = undefined;
-    lastReplyAt = at;
-    if (cfg.stampTranscript && ctx?.mode === "tui") {
-      pi.appendEntry(ENTRY_TYPE, durationMs === undefined ? { at } : { at, durationMs });
-    }
-    updateFooter();
-  });
-
-  pi.on("session_shutdown", async () => {
-    stopFooterTimer();
-    if (ctx?.hasUI) ctx.ui.setStatus("reply-clock", undefined);
-    ctx = undefined;
-  });
-}
+```text
+keybind = shift+enter=text:\n
 ```
 
-### `clickable-links.ts`
+It sends a raw linefeed indistinguishable from Ctrl+J, so Pi cannot see a real
+Shift+Enter event.
 
-Save as `~/.pi/agent/extensions/clickable-links.ts`. Optional config at
-`~/.pi/agent/clickable-links.json`:
-`{ "enabled": true, "force": false, "linkBareUrls": true, "skipCode": true }`.
-Run `/linktest` afterwards: it renders OSC 8 samples through the same
-entry-renderer path pi's login dialog uses, so you can tell "my terminal can't
-do OSC 8" apart from "the markdown path didn't apply it".
+### tmux
 
-```typescript
-/**
- * clickable-links — make URLs in agent output genuinely clickable (OSC 8).
- *
- * What pi already does:
- *   - Its markdown renderer styles link text (`mdLink`) and the URL
- *     (`mdLinkUrl`) separately, so `[label](url)` puts the raw URL on screen.
- *     Modern terminals (Ghostty, iTerm2, WezTerm, kitty) auto-detect bare URLs,
- *     so those are already Cmd+clickable without any extension.
- *   - It emits real OSC 8 hyperlinks in the login dialog, exports
- *     `hyperlink(text, url)` from @earendil-works/pi-tui, and its line
- *     compositor is OSC-8 aware (it tracks open links across overlays).
- *
- * The gap: assistant markdown never gets OSC 8, so the *label* of a link is not
- * clickable — only the visible URL is, and only via terminal auto-detection.
- * This extension closes that with a display-only markdown transformer, so
- * `[the PR](https://…)` becomes clickable on the words "the PR".
- *
- * Display-only by construction: registerMarkdownTransformer never alters the
- * stored message or what the model sees, so no escape codes enter context.
- *
- * Safety rails:
- *   - No-ops when the terminal can't do OSC 8 (getCapabilities().hyperlinks),
- *     so dumb terminals/pipes never get escape soup. `PI_HYPERLINKS=1` forces
- *     detection on (needed for tmux passthrough); config can force it too.
- *   - Skips fenced code blocks and inline code, so anything you might copy
- *     stays byte-exact.
- *   - Skips streaming updates: a partial link would be mangled mid-flight.
- *     Links become clickable when the message finalizes.
- *
- * `/linktest` renders known-good OSC 8 through the entry-renderer path (the
- * same path the login dialog uses) so you can tell "my terminal can't do OSC 8"
- * apart from "the markdown path didn't apply it".
- *
- * Config (optional): ~/.pi/agent/clickable-links.json
- *   {
- *     "enabled": true,
- *     "force": false,            // emit OSC 8 even if capability detection says no
- *     "linkBareUrls": true,      // wrap bare https://… too (not just [label](url))
- *     "includeThinking": false,  // also linkify thinking blocks
- *     "skipCode": true           // leave fenced/inline code untouched
- *   }
- */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text, getCapabilities, hyperlink } from "@earendil-works/pi-tui";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+For tmux 3.5 or newer:
 
-const TEST_ENTRY = "clickable-links-test";
-const OSC8_MARKER = "\x1b]8;;";
-
-interface Config {
-  enabled: boolean;
-  force: boolean;
-  linkBareUrls: boolean;
-  includeThinking: boolean;
-  skipCode: boolean;
-}
-
-function loadConfig(): Config {
-  const defaults: Config = {
-    enabled: true,
-    force: false,
-    linkBareUrls: true,
-    includeThinking: false,
-    skipCode: true,
-  };
-  try {
-    const dir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-    const raw = JSON.parse(readFileSync(join(dir, "clickable-links.json"), "utf8"));
-    return {
-      enabled: raw.enabled !== false,
-      force: raw.force === true,
-      linkBareUrls: raw.linkBareUrls !== false,
-      includeThinking: raw.includeThinking === true,
-      skipCode: raw.skipCode !== false,
-    };
-  } catch {
-    return defaults;
-  }
-}
-
-/** Trailing characters that are almost always sentence punctuation, not URL. */
-function splitTrailingPunctuation(url: string): [string, string] {
-  const m = /[.,;:!?)\]}'"]+$/.exec(url);
-  if (!m) return [url, ""];
-  // Keep a balanced closing paren that belongs to the URL (wiki-style links).
-  let cut = m.index;
-  const trailer = url.slice(cut);
-  if (trailer.startsWith(")")) {
-    const opens = (url.slice(0, cut).match(/\(/g) ?? []).length;
-    const closes = (url.slice(0, cut).match(/\)/g) ?? []).length;
-    if (opens > closes) cut += 1;
-  }
-  return [url.slice(0, cut), url.slice(cut)];
-}
-
-/**
- * One pass over a plain-text segment, handling (in precedence order):
- *   [label](url) -> label is clickable
- *   <url>        -> url is clickable
- *   bare url     -> url is clickable
- */
-function linkifySegment(text: string, linkBareUrls: boolean): string {
-  const pattern = linkBareUrls
-    ? /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|<(https?:\/\/[^\s>]+)>|(https?:\/\/[^\s<>"'`]+)/g
-    : /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|<(https?:\/\/[^\s>]+)>/g;
-  return text.replace(pattern, (match, label, mdUrl, angleUrl, bareUrl) => {
-    if (typeof mdUrl === "string") {
-      // Keep the markdown shape so pi still styles and shows the URL; only
-      // the label becomes clickable.
-      return `[${hyperlink(String(label), mdUrl)}](${mdUrl})`;
-    }
-    if (typeof angleUrl === "string") return `<${hyperlink(angleUrl, angleUrl)}>`;
-    if (typeof bareUrl === "string") {
-      const [url, trailer] = splitTrailingPunctuation(bareUrl);
-      if (!url) return match;
-      return hyperlink(url, url) + trailer;
-    }
-    return match;
-  });
-}
-
-/** Apply `fn` only outside fenced code blocks and inline code spans. */
-function outsideCode(markdown: string, fn: (segment: string) => string): string {
-  // Fences first: ``` or ~~~ blocks, kept verbatim.
-  const fenceSplit = markdown.split(/(^```[\s\S]*?^```|^~~~[\s\S]*?^~~~)/m);
-  return fenceSplit
-    .map((chunk, i) => {
-      if (i % 2 === 1) return chunk; // a fenced block
-      // Then inline code spans within prose.
-      return chunk
-        .split(/(`+[^`\n]*`+)/)
-        .map((piece, j) => (j % 2 === 1 ? piece : fn(piece)))
-        .join("");
-    })
-    .join("");
-}
-
-export default function (pi: ExtensionAPI) {
-  let cfg = loadConfig();
-
-  const hyperlinksUsable = (): boolean => {
-    if (cfg.force) return true;
-    try {
-      return getCapabilities().hyperlinks === true;
-    } catch {
-      return false;
-    }
-  };
-
-  pi.on("session_start", async () => {
-    cfg = loadConfig();
-  });
-
-  pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
-    if (!cfg.enabled) return markdown;
-    // A partial link cut mid-token would be rewritten wrong; wait for the
-    // finalized message (this hook runs again on finalize and on restore).
-    if (isStreaming) return markdown;
-    if (messageType === "assistant-thinking" && !cfg.includeThinking) return markdown;
-    if (markdown.includes(OSC8_MARKER)) return markdown; // already linked
-    if (!markdown.includes("http")) return markdown; // cheap bail
-    if (!hyperlinksUsable()) return markdown;
-    const linkify = (segment: string) => linkifySegment(segment, cfg.linkBareUrls);
-    return cfg.skipCode ? outsideCode(markdown, linkify) : linkify(markdown);
-  });
-
-  // ---- Self-test surface -------------------------------------------------
-  // Renders raw OSC 8 through the entry-renderer path, which is exactly how
-  // pi's own login dialog emits clickable URLs. If these are clickable but
-  // links in replies are not, the markdown path is the problem; if neither is,
-  // the terminal (or tmux passthrough) is.
-  pi.registerEntryRenderer(TEST_ENTRY, (_entry, _opts, theme) => {
-    const url = "https://github.com/erikdarlingdata/claude-plugins";
-    const caps = (() => {
-      try {
-        return String(getCapabilities().hyperlinks);
-      } catch {
-        return "unknown";
-      }
-    })();
-    const modifier = process.platform === "darwin" ? "Cmd+click" : "Ctrl+click";
-    const lines = [
-      theme.fg("accent", "clickable-links self-test"),
-      theme.fg("dim", `  capability: hyperlinks=${caps} · PI_HYPERLINKS=${process.env.PI_HYPERLINKS ?? "(unset)"}`),
-      `  1. OSC 8 on text:  ${theme.fg("mdLink", hyperlink("click these words", url))}`,
-      `  2. OSC 8 on URL:   ${theme.fg("mdLink", hyperlink(url, url))}`,
-      `  3. Bare URL (terminal auto-detect): ${theme.fg("mdLinkUrl", url)}`,
-      theme.fg("dim", `  ${modifier} each one. 1+2 clickable = OSC 8 works. Only 3 = terminal auto-detect only.`),
-    ];
-    return new Text(lines.join("\n"), 0, 0);
-  });
-
-  pi.registerCommand("linktest", {
-    description: "Render OSC 8 hyperlink samples to check what your terminal supports",
-    handler: async (_args, ctx) => {
-      if (!ctx.hasUI) return;
-      pi.appendEntry(TEST_ENTRY, { at: Date.now() });
-    },
-  });
-}
+```tmux
+set -g extended-keys on
+set -g extended-keys-format csi-u
 ```
 
-## 6. The extension stack
+On tmux 3.2–3.4, enable `extended-keys` but omit `extended-keys-format csi-u`.
+Without extended keys, Shift+Enter and Alt+Enter can collapse into plain Enter.
 
-This is the tested-together set. Install order doesn't matter, but **restart pi
-fully after installing** (`/reload` does not reliably pick up new packages).
+OSC 8 links behind tmux also need terminal passthrough and, when detection cannot
+see through the multiplexer, `PI_HYPERLINKS=1`.
+
+### Write-only terminal surfaces fail silently
+
+Raw terminal escapes written to `process.stdout` can work in regular mode and
+vanish in fullscreen mode, where Pi owns stdout and repaints frames. No documented
+extension API exposes `tuiMode`; `ctx.mode` is simply `"tui"` for both.
+
+Prefer supported UI APIs where they behave correctly. For any write-only output
+path, include a self-test command that reports what the extension believes — the
+same reason `/linktest` exists. Ghostty and iTerm2 can turn BEL into an
+unfocused-tab attention marker; the optional `settle-bell.ts` recipe rings only
+on `agent_settled`.
+
+## 6. Choose an extension profile
+
+Pi packages execute arbitrary code with your user permissions. Review source,
+try packages with `pi -e`, and pin versions or git refs for a shared known-good
+stack.
+
+### Core coding
 
 ```bash
-pi install npm:pi-mcp-adapter          # MCP servers as native tools
-pi install npm:@tintinweb/pi-subagents # Claude Code-style Agent tool, fleet view, workflows
-pi install npm:pi-lens                 # LSP diagnostics feeding the agent: biggest QoL gain
-pi install npm:pi-memory               # persistent memory + search across sessions
-pi install npm:pi-messenger            # multi-agent mesh: rooms, tasks, file reservations
-pi install npm:pi-intercom             # 1:1 messaging between pi sessions on this machine
-pi install npm:pi-background-tasks     # long-running commands with completion wake-ups
-pi install npm:pi-agent-browser-native # real browser automation (needs binary, see §7)
-pi install npm:pi-web-access           # web search / fetch / GitHub / PDF / YouTube
-pi install npm:pi-web-ui               # browser cockpit for pi (see §7)
-pi install npm:pi-cc-extensions        # Claude Code-style TUI polish (/ccstyle)
+pi install npm:pi-lens
+pi install npm:pi-memory
+# Only if you use MCP:
+pi install npm:pi-mcp-adapter
 ```
 
-**Known conflict: do not also install `pi-web-search`.** It registers a
-`web_search` tool that collides with `pi-web-access` and pi will refuse to
-start. If you ever hit a tool-name conflict, the error names both file paths;
-uninstall one (`pi remove npm:<name>`) or use package file-filtering in
-settings.json.
-
-**Bundled example extensions** (copy from
-`/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/examples/extensions/`
-into `~/.pi/agent/extensions/`, they auto-load):
-
-| Extension | Gives you |
-| --- | --- |
-| `plan-mode/` | Plan mode: `/plan` or Ctrl+Alt+P, read-only exploration |
-| `todo.ts` | TodoWrite-style task list + `/todos` |
-| `claude-rules.ts` | Reads your existing `.claude/rules/` folders |
-| `notify.ts` | Desktop notification when a turn finishes |
-| `git-checkpoint.ts` | Git stash checkpoint per turn; forks restore code state |
-| `status-line.ts` | Footer status line |
-| `protected-paths.ts` | Blocks writes to `.env`, `.git/`, `node_modules/` |
-
-**Model fallback on refusals:** pi has no built-in fallback-model setting
-(`retry.*` covers transient errors only). Quick manual option: keep a
-`/scoped-models` shortlist and cycle with **Ctrl+P** on a refusal. Automatic
-option: save the extension below as
-`~/.pi/agent/extensions/refusal-fallback.ts` (auto-loads on next start) and
-edit the three constants at the top for your provider/model:
-
-```typescript
-/**
- * Refusal Fallback Extension
- *
- * When a request fails with a provider content-policy refusal (e.g. Anthropic's
- * "blocked under Anthropic's Usage Policy"), switch the session to a fallback
- * model and continue the task automatically.
- */
-
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-
-const FALLBACK_PROVIDER = "openrouter";
-const FALLBACK_MODEL_ID = "anthropic/claude-opus-5";
-const FALLBACK_THINKING = "xhigh" as const;
-
-/** Error messages matching any of these are treated as policy refusals. */
-const REFUSAL_PATTERNS = [
-  /usage policy/i,
-  /refusals-and-fallback/i,
-  /blocked under anthropic/i,
-  /violative/i,
-  /content filter/i,
-];
-
-const CONTINUE_PROMPT =
-  "The previous attempt was blocked by the provider's content filter. " +
-  "You are now a different model. Please continue with the original request.";
-
-export default function (pi: ExtensionAPI) {
-  // Guard: only one fallback attempt per failure, reset on any successful response.
-  let attempted = false;
-
-  pi.on("message_end", async (event, ctx) => {
-    const msg = event.message;
-    if (msg.role !== "assistant") return;
-
-    const errorMessage = (msg as { errorMessage?: string }).errorMessage;
-    if (!errorMessage) {
-      attempted = false; // successful assistant message → re-arm
-      return;
-    }
-
-    if (!REFUSAL_PATTERNS.some((p) => p.test(errorMessage))) return;
-
-    // Already on the fallback model? Nothing left to fall back to.
-    if (ctx.model?.provider === FALLBACK_PROVIDER && ctx.model?.id === FALLBACK_MODEL_ID) {
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `Refusal on fallback model (${FALLBACK_MODEL_ID}) too, not retrying. Rephrase and resend.`,
-          "error",
-        );
-      }
-      return;
-    }
-
-    if (attempted) return;
-    attempted = true;
-
-    const model = ctx.modelRegistry.find(FALLBACK_PROVIDER, FALLBACK_MODEL_ID);
-    if (!model) {
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `Fallback model ${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID} not found in catalog`,
-          "error",
-        );
-      }
-      return;
-    }
-
-    const ok = await pi.setModel(model);
-    if (!ok) {
-      if (ctx.hasUI) {
-        ctx.ui.notify(`No auth for fallback provider ${FALLBACK_PROVIDER}`, "error");
-      }
-      return;
-    }
-    pi.setThinkingLevel(FALLBACK_THINKING);
-
-    if (ctx.hasUI) {
-      ctx.ui.notify(
-        `Refusal detected, falling back to ${FALLBACK_MODEL_ID} (${FALLBACK_THINKING}). ` +
-          "Use Ctrl+L to switch back.",
-        "warning",
-      );
-    }
-
-    // Re-trigger the turn on the new model. If the agent is still winding
-    // down the errored turn, queue as a follow-up; otherwise send now.
-    try {
-      if (ctx.isIdle()) {
-        pi.sendUserMessage(CONTINUE_PROMPT);
-      } else {
-        pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" });
-      }
-    } catch {
-      // Streaming state changed between check and send; queue it.
-      pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" });
-    }
-  });
-}
-```
-
-**Tab-title status indicator:** with several sessions in terminal tabs, you
-can't tell which agents are still working. This extension puts the state in
-the tab title — `⏳ <session>` while running, `✅ <session>` when settled, `π
-<session>` at rest — and rings the terminal bell on settle, which Ghostty and
-iTerm2 render as an attention indicator on unfocused tabs. It hooks
-`agent_settled` (not `agent_end`), so ✅ means *actually done*: auto-retries,
-auto-compaction, and queued follow-ups exhausted. It also shows `⌨` while a
-blocking prompt waits on you (that's what pi's `ui_prompt_start`/`ui_prompt_end`
-events are for), and re-asserts the title every 5s against `ctx.isIdle()` —
-without that reconciler the indicator is edge-triggered, so one lost OSC write
-(easy in fullscreen mode, where pi repaints whole frames) strands the wrong
-glyph until the next run. Save as
-`~/.pi/agent/extensions/tab-status.ts`, then `/reload`:
-
-```typescript
-/**
- * Tab Status Extension
- *
- * Shows the agent's working state in the terminal tab title:
- *   ⏳ <session>  while the agent is running
- *   ⌨ <session>  while a blocking prompt is waiting on YOU (select/confirm/input/editor)
- *   ✅ <session>  when it settles (no auto-retry/follow-up pending) — sticky until the next run
- *   π <session>   at rest
- *
- * TWO BUGS THIS FILE HAS ALREADY HAD, both worth remembering:
- *
- * 1. RAW STDOUT WRITES. The first two versions set the title by writing OSC 0
- *    (`\x1b]0;…\x07`) straight to process.stdout. That works in regular TUI mode,
- *    where the terminal owns the screen — and silently does nothing in fullscreen
- *    (alt-screen) mode, where pi owns stdout and repaints whole frames. The tab
- *    then freezes on whatever glyph was last written before the mode switch.
- *    pi has a first-class API for this, `ctx.ui.setTitle()`, which routes through
- *    pi's renderer (and becomes an extension_ui_request in RPC mode instead of
- *    raw bytes). Use it. The raw path is kept only as a fallback for a pi too old
- *    to expose setTitle.
- *
- * 2. EDGE-TRIGGERED STATE. Before, ⏳ was written on agent_start and cleared only
- *    on agent_settled, with nothing re-asserting truth. Any single lost write
- *    stranded the wrong glyph until the next run, and a run that ended without
- *    settling (abort, fatal error) stranded it indefinitely. So the title is now
- *    level-triggered: a low-frequency tick re-derives state from ctx.isIdle() and
- *    rewrites it, which self-heals.
- *
- * ✅ stays sticky while idle rather than decaying to π, because "finished, come
- * look" is the whole point on an unfocused tab. Only a new run clears it.
- *
- * `/tabstatus` prints what this extension believes, which is the only way to tell
- * "wrong state" apart from "correct state that never reached the terminal".
- *
- * TUI-only: headless/rpc/subagent runs emit nothing.
- */
-
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
-import { basename } from "node:path";
-import process from "node:process";
-
-const RING_BELL_ON_SETTLE = true;
-/** How often to re-assert the title, healing a missed transition. */
-const RECONCILE_MS = 5_000;
-
-type State = "rest" | "running" | "waiting" | "settled";
-
-const GLYPH: Record<State, string> = {
-	rest: "π",
-	running: "⏳",
-	waiting: "⌨",
-	settled: "✅",
-};
-
-function label(ctx: ExtensionContext): string {
-	const name = ctx.sessionManager.getSessionName();
-	return name && name.trim() ? name : basename(process.cwd());
-}
-
-export default function (pi: ExtensionAPI) {
-	const inTui = (ctx: ExtensionContext) => ctx.mode === "tui";
-	let ctx: ExtensionContext | undefined;
-	let state: State = "rest";
-	let promptDepth = 0;
-	let timer: ReturnType<typeof setInterval> | undefined;
-	let usedApi = false;
-	let lastTitle = "";
-
-	const writeTitle = (text: string) => {
-		lastTitle = text;
-		const ui = ctx?.ui as { setTitle?: (t: string) => void } | undefined;
-		if (typeof ui?.setTitle === "function") {
-			usedApi = true;
-			ui.setTitle(text);
-			return;
-		}
-		// Fallback only: pi without setTitle. Unsafe in fullscreen mode.
-		usedApi = false;
-		process.stdout.write(`\x1b]0;${text}\x07`);
-	};
-
-	const apply = () => {
-		if (!ctx) return;
-		writeTitle(`${GLYPH[state]} ${label(ctx)}`);
-	};
-
-	const set = (next: State) => {
-		state = next;
-		apply();
-	};
-
-	/** Re-derive from the one real source of truth and rewrite unconditionally. */
-	const reconcile = () => {
-		if (!ctx) return;
-		if (promptDepth > 0) {
-			state = "waiting";
-		} else {
-			let idle = true;
-			try {
-				idle = ctx.isIdle();
-			} catch {
-				idle = true;
-			}
-			if (idle) {
-				if (state !== "settled") state = "rest"; // keep ✅ sticky
-			} else {
-				state = "running";
-			}
-		}
-		apply();
-	};
-
-	pi.on("session_start", (_event: unknown, c: ExtensionContext) => {
-		if (!inTui(c)) return;
-		ctx = c;
-		promptDepth = 0;
-		set("rest");
-		// Deferred to session_start, not the factory: extensions must not start
-		// background resources in a run that may never open a session.
-		if (timer) clearInterval(timer);
-		timer = setInterval(reconcile, RECONCILE_MS);
-		timer.unref?.();
-	});
-
-	pi.on("session_info_changed", (_event: unknown, c: ExtensionContext) => {
-		if (!inTui(c)) return;
-		ctx = c;
-		reconcile();
-	});
-
-	pi.on("agent_start", (_event: unknown, c: ExtensionContext) => {
-		if (!inTui(c)) return;
-		ctx = c;
-		set("running");
-	});
-
-	// agent_settled (not agent_end): fires only when pi will not continue on
-	// its own — no pending auto-retry, auto-compact, or queued follow-up.
-	pi.on("agent_settled", (_event: unknown, c: ExtensionContext) => {
-		if (!inTui(c)) return;
-		ctx = c;
-		set("settled");
-		// Best-effort: Ghostty/iTerm2 turn BEL into a tab attention marker. There
-		// is no pi API for the bell, so this is a raw write and may not survive
-		// fullscreen mode — the title is the load-bearing signal.
-		if (RING_BELL_ON_SETTLE) process.stdout.write("\x07");
-	});
-
-	// These exist so status integrations can say "waiting for user" instead of
-	// "running" — without them a /watchdog panel or external editor reads as ⏳.
-	pi.on("ui_prompt_start", (_event: unknown, c: ExtensionContext) => {
-		if (!inTui(c)) return;
-		ctx = c;
-		promptDepth += 1;
-		set("waiting");
-	});
-
-	pi.on("ui_prompt_end", (_event: unknown, c: ExtensionContext) => {
-		if (!inTui(c)) return;
-		ctx = c;
-		promptDepth = Math.max(0, promptDepth - 1);
-		reconcile();
-	});
-
-	pi.on("session_shutdown", (_event: unknown, c: ExtensionContext) => {
-		if (timer) {
-			clearInterval(timer);
-			timer = undefined;
-		}
-		if (!inTui(c)) return;
-		writeTitle(""); // hand the title back to the shell
-		ctx = undefined;
-	});
-
-	pi.registerCommand("tabstatus", {
-		description: "Show what tab-status believes about the session (debug)",
-		handler: async (_args, c) => {
-			if (!c.hasUI) return;
-			let idle: boolean | string;
-			try {
-				idle = c.isIdle();
-			} catch (err) {
-				idle = `threw: ${err instanceof Error ? err.message : String(err)}`;
-			}
-			const ui = c.ui as { setTitle?: unknown };
-			c.ui.notify(
-				[
-					`tab-status debug`,
-					`  state: ${state} (${GLYPH[state]})`,
-					`  isIdle(): ${String(idle)}`,
-					`  promptDepth: ${promptDepth}`,
-					`  reconciler: ${timer ? `every ${RECONCILE_MS / 1000}s` : "NOT RUNNING"}`,
-					`  ctx.ui.setTitle available: ${typeof ui.setTitle === "function"}`,
-					`  last write used: ${usedApi ? "ctx.ui.setTitle (supported)" : "raw OSC 0 (fallback)"}`,
-					`  last title written: ${JSON.stringify(lastTitle)}`,
-					`  mode: ${c.mode}`,
-				].join("\n"),
-				"info",
-			);
-		},
-	});
-}
-```
-
-## 7. External binaries some extensions need
+### Delegation
 
 ```bash
-# Required by pi-agent-browser-native (the actual browser engine):
+pi install npm:@tintinweb/pi-subagents
+pi install git:github.com/erikdarlingdata/claude-plugins
+```
+
+The second package supplies session auto-resume, the watchdog, and the SQL Server
+query-plan skill. Do not also hand-copy either extension; duplicate commands and
+tools cause startup conflicts.
+
+### Collaboration
+
+```bash
+pi install npm:pi-messenger
+pi install npm:pi-intercom
+pi install npm:pi-background-tasks
+```
+
+`pi-messenger` provides rooms/tasks/crew coordination. `pi-intercom` is direct
+same-machine session-to-session messaging. Install only what you use; each active
+tool and its schema adds model context.
+
+### Web and browser
+
+```bash
+pi install npm:pi-web-access
+pi install npm:pi-agent-browser-native
+pi install npm:pi-web-ui
+```
+
+### Cosmetic compatibility
+
+```bash
+pi install npm:pi-cc-extensions
+```
+
+For this tested stack, `pi-web-search` and `pi-web-access` have been observed to
+register a conflicting `web_search` tool. Prefer `pi config` or package filtering
+to disable one non-destructively.
+
+Package operations:
+
+```bash
+pi -e npm:<package>            # try without installing
+pi list                        # authoritative installed-package inventory
+pi config                      # enable/disable package resources
+pi remove npm:<package>
+pi update --extensions         # update packages; pinned specs stay pinned
+pi update --models             # refresh model catalogs
+pi update --self               # update Pi only
+```
+
+After installing a new package, a full restart is the safest path. `/reload`
+reliably reloads auto-discovered local extensions and resources; freshly changed
+package settings have occasionally required a restart in this tested stack.
+
+**Do not reload a parent Pi session while useful subagents are running.**
+Pi-subagents aborts its children during session shutdown.
+
+## 7. External binaries
+
+```bash
+# Browser engine used by pi-agent-browser-native
 npm install -g agent-browser
-# Required by pi-memory's search:
+
+# Search backend used by pi-memory
 npm install -g @tobilu/qmd
-# Optional: browser screen recording:
+
+# Optional browser recording
 brew install ffmpeg
-# pi-web-ui's command isn't put on PATH by `pi install`; make it real:
+
+# Put the web UI command on PATH
 npm install -g pi-web-ui
 ```
 
-**Company-registry gotcha:** our npm blocks lifecycle scripts by default and
-`agent-browser` needs its postinstall to download the platform binary. If the
-install "succeeds" but the binary is missing, rerun with:
+The tested company npm configuration blocks lifecycle scripts by default, while
+`agent-browser` needs its postinstall. With npm 11:
 
 ```bash
 npm install -g --allow-scripts=agent-browser agent-browser
 ```
 
-## 8. Verify everything (5 minutes)
+This is npm-version and registry-policy specific; `npm install --help` shows
+whether `--allow-scripts` is available.
 
-1. Start pi; the startup header lists every loaded package; failures show there.
-2. Browser: ask pi to *"open <https://example.com> and take an interactive
-   snapshot"*, you should get back a ref list (`@e1`, `@e2`...).
-3. Memory: ask *"check memory status"*, qmd should show available.
-4. Diagnostics: make a deliberate type error in a project file; pi-lens should
-   report it after the edit.
-5. Web UI: `pi-web-ui` → <http://localhost:8787> (loopback-only by default; it
-   shares session history with the CLI). Ctrl+C when done.
-6. Second terminal, same folder: `/intercom` or Alt+M to message your other
-   session.
+## 8. Verify the setup
+
+Start with deterministic inventory and recovery checks:
+
+```bash
+pi --version
+pi list
+pi -p "Reply exactly: OK"
+pi --tools read,grep,find,ls -p "List the repository's top-level files"
+pi --no-extensions -p "Reply exactly: SAFE_MODE_OK"
+```
+
+Then verify only the profiles you installed:
+
+1. `/session` — confirm the session file, selected model, token/cache totals, and cost.
+2. `/watchdog status` — confirm thresholds, model policy, active capabilities, and no configuration error.
+3. Subagents — run one tiny read-only child and confirm its **effective** model in the result/widget.
+4. Browser — open <https://example.com> and take an interactive snapshot; expect `@e1`-style refs.
+5. Memory — ask for memory status; qmd should be available.
+6. Diagnostics — introduce a deliberate type error in a disposable file and confirm Pi Lens reports it; then remove it.
+7. Web UI — run `pi-web-ui`, open <http://localhost:8787>, then Ctrl+C.
+8. Intercom — from another session in the same folder, use `/intercom` or Alt+M.
+
+The startup header lists loaded resources. `pi list` is the authoritative package
+inventory.
 
 ## 9. Daily-driver commands
 
-| | |
+| Command | Purpose |
 | --- | --- |
-| `pi -c` / `pi -r` / `pi --session <id>` | continue last / pick / resume specific (partial ID ok) |
-| `/name <name>` | name the session; do this for anything you'll resume, and it's how other sessions identify each other on intercom |
-| Double-Escape or `/tree` | jump anywhere in the session tree and continue from there |
-| `/fork <msg>` | branch into a new session from an earlier prompt |
-| Enter / Alt+Enter while running | steer now / follow up after |
-| `@` | fuzzy file search; `@agentname text` messages a subagent |
-| Ctrl+P | cycle scoped models (set the list with `/scoped-models`) |
-| Ctrl+G / Ctrl+V | external editor / paste image |
-| Ctrl+X | copy the last assistant message (or the selected one in `/tree`) |
-| Ctrl+O / Ctrl+T | collapse tool output / thinking blocks |
-| `/export`, `/share` | HTML export / gist link |
+| `pi -c` | Continue the most recent session |
+| `pi -r` | Browse previous sessions |
+| `pi --session <path-or-id>` | Open a specific session; partial ID is accepted |
+| `pi --no-session` | Ephemeral session |
+| `/name <name>` | Name a session for resume and intercom |
+| `/session` | Session ID/file, messages, token/cache totals, cost |
+| Double-Escape or `/tree` | Navigate session history |
+| `/fork` / `/clone` | Branch before / at a selected entry |
+| Enter / Alt+Enter while running | Steer / queue follow-up |
+| `@` | Fuzzy file search; pi-subagents also adds agent handles |
+| Ctrl+L | Model picker |
+| Ctrl+P / Shift+Ctrl+P | Cycle scoped models |
+| Ctrl+G / Ctrl+V | External editor / paste image or text |
+| Ctrl+X | Copy last assistant reply or selected tree message |
+| Ctrl+O / Ctrl+T | Toggle tool output / thinking visibility |
+| `/export` / `/share` | HTML export / gist link |
+| `/hotkeys` | Show active keybindings |
+| `/bug` | Report a Pi issue with session diagnostics |
 
-## 10. Migrating in-flight Claude Code work
+The shell-tool environment includes `PI_SESSION_ID`, `PI_SESSION_FILE`,
+`PI_PROVIDER`, `PI_MODEL`, and `PI_REASONING_LEVEL`. These are available inside
+the LLM-callable `bash`/`powershell` tools, **not** user-entered `!`/`!!` commands.
 
-Pi can't import Claude transcripts (different format), but you don't need it to:
+## 10. Move Claude Code work and memory without rewriting it
 
-1. Your Claude history is plain JSONL under
-   `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, which is greppable.
-2. Ask pi to read the transcript and distill the *decisions* (not the chatter)
-   into an `AGENTS.md` in the project root: data-model choices, naming traps,
-   things deliberately not fixed, conventions.
-3. `cd` into the project and start pi. It auto-loads `AGENTS.md`, so the new
-   session starts fully briefed. Commit the file; it's the handoff document.
+Pi cannot import a Claude Code transcript as a native Pi session. Claude history
+is plain JSONL under `~/.claude/projects/<encoded-cwd>/`; ask Pi to read it and
+distill decisions into project `AGENTS.md`: conventions, traps, deliberate
+non-fixes, and run commands.
 
-This works agent-to-agent generally: any session can brief its successor
-through `AGENTS.md`.
+For the accumulated per-project Claude memory dirs, prefer pointers over a
+migration:
 
-### Point, don't migrate: making agents find your Claude memory
+1. Put one uncommitted parent `AGENTS.md` in the directory containing your repos.
+   Describe the path rule:
+   `~/.claude/projects/<cwd with "/" replaced by "-">/memory/`.
+2. If both harnesses should read the same file, symlink `CLAUDE.md` to it.
+3. In `~/.pi/agent/AGENTS.md`, point to `~/.claude/CLAUDE.md` and home-scope
+   memories; mark `~/.claude/` read-only.
+4. Add the same short knowledge-source rule to subagent definitions.
+5. Check for `AGENTS.override.md`; it replaces `AGENTS.md`/`CLAUDE.md` for that
+   directory and can silently defeat a shared symlink strategy.
 
-The distillation above is for handing off *one project*. For the months of
-accumulated Claude Code memory (`~/.claude/projects/*/memory/`, one lesson per
-file), don't move or rewrite anything — every transcription is a chance to
-introduce errors, and your Claude sessions keep maintaining those dirs. Agents
-ignore them for one reason only: nothing tells them they exist. Fix that with
-pointers:
+Rule of thumb: **push conventions, point at archives**.
 
-1. **Parent-directory context file** — pi loads `AGENTS.md` from the cwd *and
-   every parent directory*. One uncommitted file at `~/Documents/GitHub/AGENTS.md`
-   (or wherever your repos live) covers every repo beneath it — no commits to
-   shared repos. Put in it: the path rule
-   (`~/.claude/projects/<cwd with "/" → "-">/memory/`), a per-repo table of
-   memory dirs, and the directive *"check before inventing conventions; verify
-   the dir exists before concluding there's no prior context."*
-2. **Symlink for dual harnesses** — `ln -s AGENTS.md CLAUDE.md` in that same
-   directory; Claude Code walks parent dirs too, so both harnesses read one file.
-3. **Global** — `~/.pi/agent/AGENTS.md` loads in every pi session: point it at
-   `~/.claude/CLAUDE.md` and any home-scope memory dirs; declare `~/.claude/`
-   read-only (new durable knowledge goes to pi memory or the repo's `AGENTS.md`).
-4. **Subagent role definitions** (`~/.pi/agent/agents/*.md`) — add a short
-   "knowledge sources" preamble with the same path rule, since spawned agents
-   are the ones most likely to reinvent conventions.
+## 11. Files, package maintenance, and recovery
 
-Rule of thumb: **push conventions, point at archives.** A rule that must never
-be violated ("this file is never machine-written") belongs verbatim in the
-context file agents always see; everything else is one `ls` away.
+Global state:
 
-## 11. Where everything lives
-
-```
-~/.pi/agent/settings.json     global settings + package list
-~/.pi/agent/auth.json         provider credentials
+```text
+~/.pi/agent/settings.json     settings + package list
+~/.pi/agent/auth.json         credentials (secret; 0600)
 ~/.pi/agent/trust.json        project trust decisions
-~/.pi/agent/sessions/         transcripts, one dir per cwd (shared with pi-web-ui)
-~/.pi/agent/extensions/       your local extensions (auto-loaded)
-~/.pi/agent/agents/           subagent role definitions (markdown + frontmatter)
-~/.pi/agent/prompts/          prompt templates (slash commands)
-~/.pi/agent/skills/           skills (SKILL.md dirs)
-~/.pi/agent/npm/              pi-installed packages
-.pi/                          project-local versions of all of the above
+~/.pi/agent/keybindings.json  key overrides
+~/.pi/agent/models.json       custom models and overrides
+~/.pi/agent/models-store.json refreshed provider catalogs
+~/.pi/agent/sessions/         transcripts grouped by cwd
+~/.pi/agent/extensions/       local extensions
+~/.pi/agent/agents/           pi-subagents definitions
+~/.pi/agent/prompts/          prompt templates
+~/.pi/agent/skills/           skills
+~/.pi/agent/npm/              npm packages
+~/.pi/agent/git/              git packages
 ```
 
-Docs live at
-`/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/`, or
-just ask pi about itself; it reads its own documentation.
+Project-local `.pi/` supports settings, extensions, skills, prompts, themes,
+system-prompt files, package installs, and any package-specific directories.
+Credentials and trust decisions remain global. Sessions remain global unless
+`sessionDir` or `--session-dir` says otherwise.
+
+Official docs are under:
+
+```bash
+"$(npm root -g)/@earendil-works/pi-coding-agent/docs"
+```
+
+Upgrade deliberately:
+
+```bash
+pi list
+pi update --models
+pi update --extensions
+pi update --self
+```
+
+Versioned npm specs and git refs are pinned and do not move during ordinary
+package updates. Re-run §8 after updates. Keep `retry.provider.maxRetries` at
+`0` unless provider-level retries are intentional; otherwise SDK retries can
+hold quota failures before Pi's agent-level retry logic sees them.
+
+If startup breaks:
+
+```bash
+pi --no-extensions
+pi config
+pi remove npm:<offending-package>
+```
+
+Use `PI_OFFLINE=1` to disable startup network operations, or
+`PI_SKIP_VERSION_CHECK=1` only to suppress the version request.
 
 ## 12. Session auto-resume after reboots
 
-Claude Code needed SessionStart/SessionEnd hooks plus a boot script to bring
-back your sessions after an update or restart. The pi version ships in the same
-package as the SQL Server skill (`pi-session-resume` plugin):
+`pi-session-resume` ships in `claude-plugins` from §6. Install its shell wrapper:
 
 ```bash
-pi install git:github.com/erikdarlingdata/claude-plugins   # extension auto-loads
-brew install jq                                            # script dependency
-ln -s ~/.pi/agent/git/github.com/erikdarlingdata/claude-plugins/plugins/pi-session-resume/bin/pi-resume-sessions \
-  /usr/local/bin/pi-resume-sessions
+# macOS dependency; use your platform's jq package otherwise
+brew install jq
+mkdir -p ~/.local/bin
+ln -sf ~/.pi/agent/git/github.com/erikdarlingdata/claude-plugins/plugins/pi-session-resume/bin/pi-resume-sessions \
+  ~/.local/bin/pi-resume-sessions
+# Ensure ~/.local/bin is on PATH.
 ```
 
-(If you previously hand-copied `session-registry.ts` into
-`~/.pi/agent/extensions/`, delete that copy otherwise the extension runs
-twice.)
-
-Then: restart your pi sessions once so they register, name the ones you care
-about (`/name`), and after any reboot:
+If you previously hand-copied `session-registry.ts`, remove that duplicate.
+Restart sessions once so they register and name important ones with `/name`.
 
 ```bash
-pi-resume-sessions            # interrupted sessions come back as Ghostty
-                              # tabs (newest first); --tmux / --terminal exist
-pi-resume-sessions --list     # audit what's registered (age, name, cwd)
+pi-resume-sessions
+pi-resume-sessions --list
 ```
 
-Rules a user should know:
+Rules:
 
-- **Ctrl+D / `/quit` ends a session for good** (deregisters). Closing the
-  terminal window without quitting = interrupted, it comes back next resume.
-- Sessions idle >72h are skipped but reported (`--max-age`, `--named-only`,
-  `--all` to tune).
-- First Ghostty run pops “Terminal wants to control Ghostty”, click **Allow**.
-  If you dismiss it, macOS never re-asks; fix with
-  `tccutil reset AppleEvents com.apple.Terminal` and rerun.
-- Deliberately no LaunchAgent: macOS automation prompts are unreliable from
-  background context. Run it by hand after a reboot.
+- Ctrl+D or `/quit` deregisters the session permanently.
+- Closing a terminal without quitting marks it interrupted and resumable.
+- Sessions idle over 72h are skipped but reported; tune with `--max-age`,
+  `--named-only`, or `--all`.
+- `--tmux` and `--terminal` are available alternatives to Ghostty tabs.
+- On first Ghostty automation, allow Terminal to control Ghostty. If the macOS
+  prompt was dismissed: `tccutil reset AppleEvents com.apple.Terminal`.
+- There is deliberately no LaunchAgent; run the script after a reboot.
 
-Full design notes and TCC troubleshooting:
-`plugins/pi-session-resume/README.md` in the package repo.
+Full details:
+<https://github.com/erikdarlingdata/claude-plugins/tree/main/plugins/pi-session-resume>
 
 ## 13. Runaway subagent watchdog
 
-pi-subagents' background children only report back at completion — nothing wakes
-the orchestrator while one wedges on a giant grep, quietly compacts, or balloons
-from 200k to 2M tokens. There is no token budget anywhere in the stack:
-`max_turns` caps iterations, not spend. The `pi-subagent-watchdog` extension
-ships in the same claude-plugins package as §12, so if you ran that `pi install`
-it is already loaded (it needs `@tintinweb/pi-subagents` from §6):
+`pi-subagent-watchdog` also ships in `claude-plugins` and requires
+`@tintinweb/pi-subagents`. Do not hand-copy a second instance.
+
+It watches running **top-level** children for lifetime tokens, context usage,
+tool calls, transcript-derived turns, per-run wall clock, and compactions. A
+compact check-in wakes the orchestrator while complete structured audit records
+stay out of LLM context.
+
+Token-tax controls:
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `batchWindowMs` | 5000 | Collapse nearby breaches into one wake |
+| `globalCooldownMs` | 60000 | Minimum gap between fleet wakes |
+| `maxCheckInsPerAgent` | 2 | Automatic wakes per agent |
+| `auditTrail` | true | Persist full non-context forensic entries |
+
+Modes:
+
+- `guide` — assess on-track / lost / runaway; healthy work continues.
+- `strict` — thresholds are budgets; wrap by default. When the live active tool
+  set contains `extend_subagent`, continuation requires a real bounded extension;
+  older pi-subagents get truthful leave-alone/wrap guidance instead.
+
+Optional `models.required` enforces an exact effective `provider/model-id` for
+watched top-level agents. Identity comes from the live child session across all
+spawn paths, with startup metadata only as fallback. Mismatches default to
+`notify`; `hard-stop` is opt-in. `/watchdog status` prints the exact copyable
+model string and active capabilities.
+
+Surfaces:
+
+| Command/tool | Purpose |
+| --- | --- |
+| `/watchdog` | Human panel: inspect, check in, steer, hard stop |
+| `/watchdog status` | Config, capabilities, watched agents |
+| `/watchdog config` | Edit validated global JSON and apply live |
+| `/watchdog reload` | Re-read hand-edited config |
+| `/watchdog help` | Full settings reference |
+| `subagent_vitals` | One-call fleet snapshot for the orchestrator |
+
+A steer cannot interrupt a running tool call; only a hard stop can. Wall clock
+is therefore the only signal that catches a child wedged inside one giant tool.
+
+Full details:
+<https://github.com/erikdarlingdata/claude-plugins/tree/main/plugins/pi-subagent-watchdog>
+
+## 14. Optional extension recipes
+
+Full, maintained source moved out of the 15-minute path:
+
+<https://github.com/erikdarlingdata/claude-plugins/tree/main/recipes/extensions>
+
+Available recipes:
+
+- `reply-timestamps.ts` — durable reply stamps and footer clock
+- `clickable-links.ts` — OSC 8 labels, `/linktest`
+- `bang-notify.ts` — completion wake-ups and learned `!` command suggestions
+- `settle-bell.ts` — BEL on `agent_settled`; terminal-native attention marker
+- `refusal-fallback.ts` — advanced, policy-sensitive automatic fallback
+
+Copy only what you want into `~/.pi/agent/extensions/`, review it first, and run
+`/reload` only after useful subagents have finished.
+
+## 15. Troubleshooting
+
+- **Extension prevents startup:** `pi --no-extensions`, then `pi config` or
+  `pi remove npm:<package>`.
+- **Tool-name conflict:** disable one resource with `pi config`; package filtering
+  is preferable to uninstalling when testing a fix.
+- **Newly installed package appears stale:** fully restart Pi. `/reload` handles
+  local auto-discovered resources, but this tested stack has occasionally needed
+  a restart after package-list changes.
+- **Do not `/reload` with useful subagents running:** parent shutdown aborts them.
+- **Binary missing after install:** check the registry's lifecycle-script policy
+  and `npm install --help`; see §7.
+- **Model refusal:** switch with Ctrl+L/Ctrl+P or use the advanced refusal recipe
+  only for an approved false positive and approved destination provider.
+- **Which model am I on?** Ask Pi to run this through its `bash` tool:
+  `printf '%s/%s (%s)\n' "$PI_PROVIDER" "$PI_MODEL" "$PI_REASONING_LEVEL"`.
+  User-entered `!` commands do not receive those variables.
+- **400 `configuration_update` / mid-conversation effort error:** first refresh
+  models with `pi update --models`. If the catalog still overclaims
+  `supportsMidConvoEffort`, apply a model-specific `compat` override in
+  `~/.pi/agent/models.json`; remove it once the upstream catalog is corrected.
+- **Slow/hung quota failure:** verify `retry.provider.maxRetries` is `0` and
+  `retry.maxAgentDelayMs` is bounded.
+- **Cache surprise:** inspect `/session`; temporarily enable
+  `showCacheMissNotices` rather than guessing from context size alone.
+- **Terminal key acts like Enter:** check Ghostty's old Shift+Enter mapping and
+  tmux extended-key settings in §5.
+- **Need to report Pi itself:** `/bug <description>` includes session diagnostics.
+
+Platform references:
+
+- `docs/terminal-setup.md`
+- `docs/tmux.md`
+- `docs/windows.md`
+- `docs/containerization.md`
+- `docs/security.md`
+
+Resolve those paths under:
 
 ```bash
-pi install git:github.com/erikdarlingdata/claude-plugins
+"$(npm root -g)/@earendil-works/pi-coding-agent"
 ```
-
-(Don't *also* hand-copy the extension into `~/.pi/agent/extensions/` — the
-package already ships it, and two copies register the same `/watchdog` command
-and `subagent_vitals` tool, which pi refuses at startup. Same trap as the
-`session-registry.ts` note in §12.)
-
-It polls each running top-level subagent's live vitals — tokens, context %, tool
-uses, transcript-derived turns, wall clock, compactions — and when a threshold
-crosses, injects a check-in into the main conversation: what crossed, the
-agent's most recent tool calls, and a decision protocol. A `🐕 N` footer status
-shows while agents are watched.
-
-### The watchdog's own token tax
-
-A check-in *is* an LLM turn, so a naive watchdog amplifies the spend it exists to
-police. Four knobs bound that:
-
-| Knob | Default | What it bounds |
-| --- | --- | --- |
-| `batchWindowMs` | 5000 | agents breaching near each other collapse into ONE wake |
-| `globalCooldownMs` | 60000 | minimum gap between wakes across the whole fleet |
-| `maxCheckInsPerAgent` | 2 | automatic wakes per agent (manual `/watchdog` check-ins bypass it) |
-| `auditTrail` | true | full records go to `subagent-watchdog-audit` custom entries, which never enter LLM context |
-
-So the model-facing message stays compact while the forensics — every retained
-tool call, the thresholds crossed, the action taken, and every *cancelled*
-check-in with its reason — land on disk for humans and `jq`. In guide mode a
-signal the agent has never crossed before can still speak once past the cap, so
-a genuinely new failure mode isn't silenced by a quota.
-
-### Modes
-
-- **`guide`** (default) — the check-in asks the orchestrator to assess: on
-  track, lost, or runaway. Healthy agents run free.
-- **`strict`** — thresholds are budgets: wrap up by default, continuation
-  requires cited evidence, and check-in #2 means the exception is spent.
-
-Strict mode is careful about what it can actually promise. An ordinary steering
-message **cannot** change a running agent's `max_turns` — that ceiling is
-captured at spawn and never re-read — so the check-in only names the real
-`extend_subagent` tool when that tool is actually present, and otherwise says
-plainly that this version cannot extend a live ceiling and asks the orchestrator
-to simply choose not to send a wrap-up steer. Capability is read from the live
-active-tool set at delivery time, so it starts naming the tool the moment it
-exists, with no restart.
-
-### Model invariant (optional)
-
-`models.required` pins an exact effective `provider/model-id` for every watched
-top-level agent, read from the **live session** so it holds across every spawn
-path rather than only the Agent tool. A mismatch is audited and either notified
-(default) or hard-stopped. Get the string by running `/watchdog status` and
-copying it — an invalid value disables enforcement loudly instead of flagging
-every agent. This is defense-in-depth: forcing the model before launch belongs
-in pi-subagents.
-
-### Surfaces
-
-| | |
-| --- | --- |
-| `/watchdog` | panel: pick a running agent → vitals / check-in / steer / hard stop |
-| `/watchdog status` | thresholds, capabilities, watched agents |
-| `/watchdog config` | edit config in pi's editor — validated, applied live |
-| `/watchdog reload` | re-read config after hand-editing, no restart |
-| `/watchdog help` | full settings reference |
-| `subagent_vitals` | the orchestrator's one-call fleet snapshot |
-
-Config: `~/.pi/agent/subagent-watchdog.json`, project override
-`.pi/subagent-watchdog.json`. Optional `hardStop` auto-aborts past a hard limit
-and reports the outcome **from the RPC reply**, so a failed stop says "still
-running, do not respawn" instead of lying.
-
-Two facts worth knowing even if you never install it: a steer **cannot**
-interrupt a running tool call (it queues until the tool returns — only a hard
-stop breaks a wedged execution), and **wall clock is the only signal that
-catches a wedged tool**, because a child stuck inside one giant grep shows
-frozen token and turn counters. Full docs:
-[`plugins/pi-subagent-watchdog/README.md`](plugins/pi-subagent-watchdog/README.md).
-
-## 14. `!` commands: completion wake-ups + autocomplete
-
-Two Claude Code habits `bang-notify.ts` restores. First: in Claude, the agent
-reacts when your `!` command finishes; in stock pi the output lands in context
-but nothing triggers a turn, so you type "done" to deliver it. Second:
-autocomplete for the commands you run constantly (`aws sso login …`).
-
-Save the code below as `~/.pi/agent/extensions/bang-notify.ts` (auto-loads on
-next start; `/reload` picks it up too). Optional config at
-`~/.pi/agent/bang-notify.json`:
-
-```json
-{
-  "enabled": true,
-  "minSeconds": 0,
-  "alwaysOnError": true,
-  "favorites": [
-    "aws sso login --profile work-prod"
-  ]
-}
-```
-
-- `minSeconds` — wake the agent only if the command ran at least this long
-  (`0` = every command; `8` is a good value if you only want wake-ups for
-  commands you walked away from). `!!` never wakes the agent (its output is
-  hidden from the model by design), nor does a command you Ctrl+C'd.
-- `alwaysOnError` — non-zero exits wake the agent regardless of `minSeconds`,
-  with a "diagnose the failure" framing.
-- `favorites` — offered first when you type `!`. Learned history (every
-  `!`/`!!` command, ranked by frequency then recency, persisted to
-  `~/.pi/agent/bang-history.json`) fills the rest of the menu; keep typing to
-  filter, Tab to accept.
-
-```typescript
-/**
- * bang-notify — quality of life for `!` shell commands.
- *
- * 1) WAKE THE AGENT when a `!` command finishes. pi already sends `!` output
- *    to the model (usage.md), but nothing triggers a turn — the model only
- *    reads it with your next message. This wraps the local bash backend via
- *    the `user_bash` hook and injects a `triggerTurn: true` message when a
- *    command completes (idle only; never for `!!`, whose output the model
- *    can't see; never for commands you Ctrl+C'd).
- *
- * 2) AUTOCOMPLETE for common `!` commands. Type `!` and get suggestions from
- *    your configured favorites plus learned history (every `!`/`!!` command
- *    you run is counted and persisted). Filter by typing; Tab to accept.
- */
-import type { BashOperations, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createLocalBashOperations } from "@earendil-works/pi-coding-agent";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
-
-interface Config {
-  enabled: boolean;
-  minSeconds: number;
-  alwaysOnError: boolean;
-  favorites: string[];
-}
-
-interface HistEntry {
-  count: number;
-  last: number;
-}
-
-function agentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-}
-
-function loadConfig(): Config {
-  const defaults: Config = { enabled: true, minSeconds: 8, alwaysOnError: true, favorites: [] };
-  try {
-    const raw = JSON.parse(readFileSync(join(agentDir(), "bang-notify.json"), "utf8"));
-    return {
-      enabled: raw.enabled !== false,
-      minSeconds: Number.isFinite(Number(raw.minSeconds)) ? Math.max(0, Number(raw.minSeconds)) : defaults.minSeconds,
-      alwaysOnError: raw.alwaysOnError !== false,
-      favorites: Array.isArray(raw.favorites)
-        ? raw.favorites.filter((f: unknown): f is string => typeof f === "string" && f.trim().length > 0).map((f: string) => f.trim())
-        : [],
-    };
-  } catch {
-    return defaults;
-  }
-}
-
-const HISTORY_PATH = () => join(agentDir(), "bang-history.json");
-const HISTORY_CAP = 50;
-
-function loadHistory(): Record<string, HistEntry> {
-  try {
-    const raw = JSON.parse(readFileSync(HISTORY_PATH(), "utf8"));
-    return typeof raw === "object" && raw !== null ? raw : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveHistory(history: Record<string, HistEntry>): void {
-  try {
-    const entries = Object.entries(history)
-      .sort((a, b) => b[1].last - a[1].last)
-      .slice(0, HISTORY_CAP);
-    writeFileSync(HISTORY_PATH(), JSON.stringify(Object.fromEntries(entries), null, 2) + "\n", "utf8");
-  } catch {
-    /* history is best-effort */
-  }
-}
-
-export default function (pi: ExtensionAPI) {
-  let cfg = loadConfig();
-  let history = loadHistory();
-  let autocompleteRegistered = false;
-
-  const recordCommand = (command: string) => {
-    const cmd = command.trim();
-    if (!cmd) return;
-    const e = history[cmd] ?? { count: 0, last: 0 };
-    e.count += 1;
-    e.last = Date.now();
-    history[cmd] = e;
-    saveHistory(history);
-  };
-
-  /** Favorites first (config order), then history by frequency/recency; deduped; max 8. */
-  const bangSuggestions = (typed: string) => {
-    const q = typed.trim().toLowerCase();
-    const seen = new Set<string>();
-    const items: Array<{ value: string; label: string; description: string }> = [];
-    const push = (cmd: string, description: string) => {
-      if (seen.has(cmd) || items.length >= 8) return;
-      seen.add(cmd);
-      items.push({
-        value: `!${cmd}`,
-        label: `!${cmd.length > 70 ? cmd.slice(0, 70) + "…" : cmd}`,
-        description,
-      });
-    };
-    for (const f of cfg.favorites) {
-      if (!q || f.toLowerCase().includes(q)) push(f, "favorite");
-    }
-    const ranked = Object.entries(history)
-      .filter(([c]) => !q || c.toLowerCase().includes(q))
-      .sort((a, b) => b[1].count - a[1].count || b[1].last - a[1].last);
-    for (const [c, e] of ranked) push(c, `used ${e.count}×`);
-    return items;
-  };
-
-  pi.on("session_start", async (_event, ctx) => {
-    cfg = loadConfig();
-    history = loadHistory();
-    // Stack a `!` completion provider on pi's built-in autocomplete. At most
-    // once per activation — pi appends wrappers to a list it never prunes
-    // (same rule pi-subagents follows for its @mention provider). TUI only.
-    if (ctx.mode !== "tui" || autocompleteRegistered) return;
-    if (typeof ctx.ui.addAutocompleteProvider !== "function") return;
-    autocompleteRegistered = true;
-    ctx.ui.addAutocompleteProvider((current) => ({
-      triggerCharacters: [...(current.triggerCharacters ?? []), "!"],
-      async getSuggestions(lines, line, col, options) {
-        const beforeCursor = (lines[line] ?? "").slice(0, col);
-        // Bang completion only when the editor's first line IS the command
-        // (bang at column 0) — `!` mid-sentence is prose, not a command.
-        const m = line === 0 ? beforeCursor.match(/^!{1,2}\s*(.*)$/) : null;
-        if (!m) return current.getSuggestions(lines, line, col, options);
-        const items = bangSuggestions(m[1] ?? "");
-        if (items.length === 0) return current.getSuggestions(lines, line, col, options);
-        return { prefix: beforeCursor, items };
-      },
-      applyCompletion(lines, line, col, item, prefix) {
-        return current.applyCompletion(lines, line, col, item, prefix);
-      },
-      shouldTriggerFileCompletion(lines, line, col) {
-        return current.shouldTriggerFileCompletion?.(lines, line, col) ?? true;
-      },
-    }));
-  });
-
-  pi.on("user_bash", (event, ctx) => {
-    if (!cfg.enabled) return;
-
-    const local = createLocalBashOperations();
-    const operations: BashOperations = {
-      exec: async (command, cwd, options) => {
-        const started = Date.now();
-        const result = await local.exec(command, cwd, options);
-        const seconds = (Date.now() - started) / 1000;
-        const killed = result.exitCode === null;
-
-        // Learn every completed command (`!` and `!!` alike) for autocomplete.
-        if (!killed) recordCommand(command);
-
-        // Wake the agent — but never for `!!` (its output is hidden from the
-        // model) and never for a command the user killed themselves.
-        const failed = !killed && result.exitCode !== 0;
-        const dueTime = seconds >= cfg.minSeconds;
-        const dueError = cfg.alwaysOnError && failed;
-        if (!event.excludeFromContext && !killed && (dueTime || dueError) && ctx.isIdle()) {
-          // Small delay so pi appends the bash entry (command + output) to the
-          // session BEFORE the triggered turn snapshots context.
-          setTimeout(() => {
-            if (!ctx.isIdle()) return; // user started something meanwhile
-            const oneLine = command.length > 120 ? command.slice(0, 120) + "…" : command.replace(/\n/g, " ");
-            const verdict = failed ? `FAILED (exit ${result.exitCode}` : `finished (exit ${result.exitCode}`;
-            pi.sendMessage(
-              {
-                customType: "bang-notify",
-                content:
-                  `The user's shell command \`${oneLine}\` just ${verdict}, ${seconds.toFixed(0)}s). ` +
-                  `Its output is in the conversation above — review it and ` +
-                  (failed ? `diagnose the failure.` : `continue whatever it was for.`),
-                display: true,
-              },
-              { deliverAs: "followUp", triggerTurn: true },
-            );
-          }, 400);
-        }
-
-        return result;
-      },
-    };
-    return { operations };
-  });
-}
-```
-
-## 15. When something breaks
-
-- **"Tool X conflicts with Y" at startup**: two extensions register the same
-  tool. `pi remove npm:<one-of-them>`. The error names both paths.
-- **New package's tools missing**: fully quit and restart pi; `/reload` keeps
-  stale compiled code.
-- **Binary "not found" after npm install**: the allow-scripts gotcha (§7).
-- **Model refusal / policy block**: Ctrl+P to the next scoped model, resend.
-- **400 "Mid-conversation reasoning effort (configuration_update) is not
-  supported" after switching models mid-session**: the model's catalog
-  metadata claims per-turn effort support (`supportsMidConvoEffort`) that the
-  OpenRouter transport doesn't actually have. Override it in
-  `~/.pi/agent/models.json`, then restart pi:
-
-  ```json
-  {
-    "providers": {
-      "openrouter": {
-        "modelOverrides": {
-          "anthropic/claude-opus-5": {
-            "compat": {
-              "supportsMidConvoEffort": false,
-              "forceAdaptiveThinking": true,
-              "supportsTemperature": false
-            }
-          }
-        }
-      }
-    }
-  }
-  ```
-
-  (Affects `anthropic/claude-opus-5` via OpenRouter only — `fable-5.1` accepts
-  mid-convo effort there. Tracked upstream: earendil-works/pi#9165.)
-- **Which model am I actually on?**: `echo $PI_PROVIDER/$PI_MODEL` (pi injects
-  `PI_*` vars into every shell command; `PI_REASONING_LEVEL`, `PI_SESSION_ID`
-  too).
