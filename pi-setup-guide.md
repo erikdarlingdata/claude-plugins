@@ -64,13 +64,548 @@ extensions (which are arbitrary TypeScript).
 | `CLAUDE.md` | Reads `AGENTS.md` **or** `CLAUDE.md` natively (cwd + parents + `~/.pi/agent/AGENTS.md`) |
 | Custom slash commands | Prompt templates: `.md` files in `~/.pi/agent/prompts/` or `.pi/prompts/` |
 | Skills | Native `SKILL.md` support |
-| `!` shell escape | `!cmd` (output goes to model), `!!cmd` (output stays local). Gotcha: pi doesn't *wake* the agent when the command finishes — output sits in context until your next message. `bang-notify.ts` (§13) closes that gap, Claude-style, plus autocomplete for common commands |
+| `!` shell escape | `!cmd` (output goes to model), `!!cmd` (output stays local). Gotcha: pi doesn't *wake* the agent when the command finishes — output sits in context until your next message. `bang-notify.ts` (§14) closes that gap, Claude-style, plus autocomplete for common commands |
+| Copy-on-select + "copied" confirmation | Ships in **fullscreen** TUI mode (off by default): `tuiMode: "fullscreen"` copies your drag-selection and flashes `Copied!`. `Ctrl+X` copies the last reply outright (§5) |
+| Clicking a link | **Cmd+click** on macOS (Ctrl+click is the Linux/Windows binding, and the right-click gesture on macOS). Labels become clickable with `clickable-links.ts` (§5) |
 | `/compact`, `--continue`, `--resume` | `/compact`, `pi -c`, `pi -r`, `pi --session <partial-id>` |
 | `/btw` side questions | Type while it works: **Enter** = steering (injected after current tool call), **Alt+Enter** = follow-up (after all work). Or `@agentname question` routes to a subagent without touching main context |
 | Checkpoints / rewind | Session **tree**: double-Escape jumps to any earlier point; `/fork` branches; add `git-checkpoint.ts` (below) to restore code state too |
 | MCP | `npm:pi-mcp-adapter` extension |
 
-## 5. The extension stack
+## 5. TUI ergonomics and Claude Code muscle memory
+
+The things that cost an ex-pat the most time aren't missing from pi — they're
+bound differently, or off by default.
+
+### Copy-on-select, and the "copied" confirmation
+
+Claude Code copied your mouse selection and flashed a confirmation. pi does the
+same, but only in **fullscreen** TUI mode, which is not the default. Try it for
+one session:
+
+```bash
+pi --tui-mode fullscreen
+```
+
+Keep it via `/settings` (applies immediately) or `"tuiMode": "fullscreen"` in
+`settings.json`. `fullscreenCopyOnSelect` is already `true`, so there is nothing
+else to set: dragging selects and copies, and pi flashes `Copied!` in the corner.
+The flash is deliberately brief on success and noticeably longer on
+`Copy failed` — so "I didn't see anything" means it worked. Set it `false` and
+selections stay highlighted until you press `Ctrl+X`.
+
+In the default `regular` mode pi deliberately does **not** capture the mouse
+("the terminal owns its scrollback"), so selection belongs to your terminal.
+Ghostty's own `copy-on-select` already defaults to `true` on macOS — silently,
+which is why it's easy to assume it's broken. If it isn't landing where `Cmd+V`
+reads, make it explicit in `~/.config/ghostty/config`:
+
+```
+copy-on-select = clipboard
+```
+
+Fullscreen trade-offs worth knowing: it's flagged **experimental**, and pi owns
+the screen, so your terminal's native scrollback, search, and selection give way
+to pi's own scroll region. `fullscreenExitOutput` (default `transcript`) decides
+what's printed when you exit, and `fullscreenScrollbar` tunes the scrollbar
+column.
+
+**For whole replies, `Ctrl+X` beats dragging.** `app.message.copy` copies the
+last assistant message — or the selected one while you're in `/tree` — with no
+selection at all. It flashes in fullscreen and writes a status line in regular
+mode.
+
+### Clicking links
+
+**Cmd+click on macOS.** Ctrl+click is the right-click/context-menu gesture
+there, so it looks like link-opening is broken; Ctrl+click is the
+Linux/Windows binding.
+
+Bare URLs are already clickable through terminal auto-detection, and pi renders
+markdown links with the URL visible (`mdLink` and `mdLinkUrl` are separate theme
+colors), so those are clickable too. What *isn't* clickable out of the box is a
+link's **label**. pi has the machinery — it emits OSC 8 hyperlinks for login
+URLs and exports `hyperlink(text, url)` from `@earendil-works/pi-tui` — it just
+never applies it to assistant markdown. `clickable-links.ts` below closes that
+gap, and in fullscreen mode a plain click (no modifier) opens links.
+
+Inside tmux, OSC 8 needs passthrough: set `PI_HYPERLINKS=1` (it overrides
+detection with `1`, `0`, or `auto`) and enable tmux's `allow-passthrough`.
+
+### Fullscreen's silent trap: raw terminal escapes
+
+Worth knowing before you write your own extension, because it cost us an
+afternoon. An extension that emits terminal escape sequences by writing to
+`process.stdout` directly works in regular mode and **silently does nothing** in
+fullscreen mode, where pi owns stdout and repaints whole frames. No error, no
+warning — the feature just stops, and the last value it managed to write stays
+frozen on screen forever.
+
+- For the **window/tab title** there is a supported API: `ctx.ui.setTitle()`.
+  Use it; `tab-status.ts` below does.
+- For **desktop notifications** there is none. pi's bundled `notify.ts` example
+  posts OSC 777 / OSC 99 escapes, so it goes quiet in fullscreen. On macOS the
+  mode-independent fix is to shell out, passing text as argv so quotes and
+  backslashes in a title can't break the script or inject anything:
+
+```typescript
+await pi.exec("osascript", [
+  "-e", "on run argv",
+  "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+  "-e", "end run",
+  "--", body, title,
+]);
+```
+
+  (OSC 777 remains the better choice over SSH, where it surfaces on the machine
+  running your terminal rather than the remote host.)
+
+An extension **cannot** detect which TUI mode it is in — `ctx.mode` is `"tui"`
+for both and nothing exposes `tuiMode` — so prefer a transport that works either
+way over branching on the mode. And give any write-only output path a test
+command (`/tabstatus`, `/notifytest`, `/linktest` all exist for this reason):
+when a channel fails silently, the only way to tell "wrong state" from "correct
+state that never arrived" is an affordance that reports what the extension
+believes.
+
+### Timestamps on replies
+
+`/tree` plus **shift+t** natively toggles timestamps on tree labels, and every
+message already carries a `timestamp` in the session file — the live transcript
+just never shows one. `reply-timestamps.ts` below adds a dim stamp after each
+completed reply and a live footer clock, which is what you want on a tab you
+walked away from.
+
+### `reply-timestamps.ts`
+
+Save as `~/.pi/agent/extensions/reply-timestamps.ts`. Stamps are written with
+`pi.appendEntry` + `registerEntryRenderer`, which is pi's channel for durable
+TUI-only content — custom entries never enter LLM context, so this costs nothing
+in tokens and survives `/resume`. Optional config at
+`~/.pi/agent/reply-timestamps.json`:
+`{ "stampTranscript": true, "showFooter": true, "showDuration": true, "clock": "24h" }`
+(`clock` accepts `24h`, `12h`, or `iso`).
+
+```typescript
+/**
+ * reply-timestamps — show when the agent last replied.
+ *
+ * pi stores a `timestamp` on every message but never displays one in the live
+ * transcript (only `/tree` + shift+t shows them, for history navigation). Two
+ * surfaces here:
+ *
+ *   1. A dim stamp line appended after each completed reply:
+ *        ↩ replied 14:32:05 · took 47s
+ *      Written with pi.appendEntry + registerEntryRenderer, so it is TUI-only
+ *      and costs NOTHING in LLM context (custom entries don't participate),
+ *      and it persists — resumed sessions still show their old stamps.
+ *
+ *   2. A live footer clock, so a tab you walked away from answers "when did
+ *      this finish?" at a glance:
+ *        ↩ 14:32:05 (3m ago)
+ *
+ * Timing is measured from the first agent_start of a reply to agent_settled,
+ * so "took" reflects the whole reply including tool calls, retries and
+ * auto-compaction — not just the last LLM call.
+ *
+ * Config (optional): ~/.pi/agent/reply-timestamps.json
+ *   {
+ *     "enabled": true,
+ *     "stampTranscript": true,   // the in-transcript stamp line
+ *     "showFooter": true,        // the footer clock
+ *     "showDuration": true,      // "· took 47s"
+ *     "clock": "24h",            // "24h" | "12h" | "iso"
+ *     "footerRefreshMs": 30000   // how often the footer's "(3m ago)" re-renders
+ *   }
+ */
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const ENTRY_TYPE = "reply-timestamp";
+
+interface Config {
+  enabled: boolean;
+  stampTranscript: boolean;
+  showFooter: boolean;
+  showDuration: boolean;
+  clock: "24h" | "12h" | "iso";
+  footerRefreshMs: number;
+}
+
+function loadConfig(): Config {
+  const defaults: Config = {
+    enabled: true,
+    stampTranscript: true,
+    showFooter: true,
+    showDuration: true,
+    clock: "24h",
+    footerRefreshMs: 30_000,
+  };
+  try {
+    const dir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+    const raw = JSON.parse(readFileSync(join(dir, "reply-timestamps.json"), "utf8"));
+    const clock = raw.clock === "12h" || raw.clock === "iso" ? raw.clock : defaults.clock;
+    const refresh = Number(raw.footerRefreshMs);
+    return {
+      enabled: raw.enabled !== false,
+      stampTranscript: raw.stampTranscript !== false,
+      showFooter: raw.showFooter !== false,
+      showDuration: raw.showDuration !== false,
+      clock,
+      footerRefreshMs: Number.isFinite(refresh) ? Math.max(1_000, refresh) : defaults.footerRefreshMs,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function formatClock(at: number, clock: Config["clock"]): string {
+  const d = new Date(at);
+  if (clock === "iso") return d.toISOString().replace("T", " ").slice(0, 19);
+  return d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: clock === "12h",
+  });
+}
+
+/** Compact duration: 850ms / 47s / 3m12s / 1h04m. */
+function formatDuration(ms: number): string {
+  if (ms < 1_000) return `${Math.round(ms)}ms`;
+  const total = Math.round(ms / 1_000);
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  if (m < 60) return s === 0 ? `${m}m` : `${m}m${String(s).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h${String(m % 60).padStart(2, "0")}m`;
+}
+
+/** Coarse age for the footer: just now / 3m ago / 2h ago / 14:32:05 once stale. */
+function formatAge(at: number, now: number, clock: Config["clock"]): string {
+  const secs = Math.max(0, Math.round((now - at) / 1_000));
+  if (secs < 10) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return formatClock(at, clock);
+}
+
+export default function (pi: ExtensionAPI) {
+  let cfg = loadConfig();
+  let ctx: ExtensionContext | undefined;
+  /** First agent_start of the current reply; undefined while idle. */
+  let replyStartedAt: number | undefined;
+  /** Last completed reply, for the footer. */
+  let lastReplyAt: number | undefined;
+  let footerTimer: ReturnType<typeof setInterval> | undefined;
+
+  const updateFooter = () => {
+    if (!ctx?.hasUI || !cfg.enabled || !cfg.showFooter) return;
+    if (lastReplyAt === undefined) {
+      ctx.ui.setStatus("reply-clock", undefined);
+      return;
+    }
+    const at = formatClock(lastReplyAt, cfg.clock);
+    const age = formatAge(lastReplyAt, Date.now(), cfg.clock);
+    ctx.ui.setStatus("reply-clock", `↩ ${at} (${age})`);
+  };
+
+  const stopFooterTimer = () => {
+    if (footerTimer) {
+      clearInterval(footerTimer);
+      footerTimer = undefined;
+    }
+  };
+
+  pi.registerEntryRenderer(ENTRY_TYPE, (entry, _opts, theme) => {
+    const data = (entry.data ?? {}) as { at?: number; durationMs?: number };
+    if (typeof data.at !== "number") return new Text("", 0, 0);
+    // Rendered from persisted entry data, not from "now" — a resumed session
+    // shows when each reply actually landed.
+    let line = `↩ replied ${formatClock(data.at, cfg.clock)}`;
+    if (cfg.showDuration && typeof data.durationMs === "number") {
+      line += ` · took ${formatDuration(data.durationMs)}`;
+    }
+    return new Text(theme.fg("dim", line), 0, 0);
+  });
+
+  pi.on("session_start", async (_event, c) => {
+    cfg = loadConfig();
+    // TUI only. This also keeps subagent sessions out: they re-run extension
+    // factories in the same process (pi-subagents binds extensions into each
+    // child), and neither a footer nor a stamp means anything there.
+    if (c.mode !== "tui") return;
+    ctx = c;
+    replyStartedAt = undefined;
+    // Restore the footer from history so a resumed session doesn't read as
+    // "never replied" until the next turn.
+    lastReplyAt = undefined;
+    for (const entry of c.sessionManager.getEntries()) {
+      if (entry.type === "custom" && entry.customType === ENTRY_TYPE) {
+        const at = (entry.data as { at?: number } | undefined)?.at;
+        if (typeof at === "number") lastReplyAt = at;
+      }
+    }
+    updateFooter();
+    stopFooterTimer();
+    if (cfg.enabled && cfg.showFooter) {
+      footerTimer = setInterval(updateFooter, cfg.footerRefreshMs);
+      footerTimer.unref?.();
+    }
+  });
+
+  pi.on("agent_start", async () => {
+    if (!cfg.enabled) return;
+    // First start of this reply wins: agent_start fires again for auto-retry
+    // and post-compaction continuation, and those are part of the same reply.
+    replyStartedAt ??= Date.now();
+  });
+
+  // agent_settled, not agent_end: pi may still auto-retry, auto-compact, or
+  // drain queued follow-ups after agent_end. Settled is when the agent has
+  // actually finished replying — the moment worth stamping.
+  pi.on("agent_settled", async () => {
+    if (!cfg.enabled) return;
+    const at = Date.now();
+    const durationMs = replyStartedAt === undefined ? undefined : at - replyStartedAt;
+    replyStartedAt = undefined;
+    lastReplyAt = at;
+    if (cfg.stampTranscript && ctx?.mode === "tui") {
+      pi.appendEntry(ENTRY_TYPE, durationMs === undefined ? { at } : { at, durationMs });
+    }
+    updateFooter();
+  });
+
+  pi.on("session_shutdown", async () => {
+    stopFooterTimer();
+    if (ctx?.hasUI) ctx.ui.setStatus("reply-clock", undefined);
+    ctx = undefined;
+  });
+}
+```
+
+### `clickable-links.ts`
+
+Save as `~/.pi/agent/extensions/clickable-links.ts`. Optional config at
+`~/.pi/agent/clickable-links.json`:
+`{ "enabled": true, "force": false, "linkBareUrls": true, "skipCode": true }`.
+Run `/linktest` afterwards: it renders OSC 8 samples through the same
+entry-renderer path pi's login dialog uses, so you can tell "my terminal can't
+do OSC 8" apart from "the markdown path didn't apply it".
+
+```typescript
+/**
+ * clickable-links — make URLs in agent output genuinely clickable (OSC 8).
+ *
+ * What pi already does:
+ *   - Its markdown renderer styles link text (`mdLink`) and the URL
+ *     (`mdLinkUrl`) separately, so `[label](url)` puts the raw URL on screen.
+ *     Modern terminals (Ghostty, iTerm2, WezTerm, kitty) auto-detect bare URLs,
+ *     so those are already Cmd+clickable without any extension.
+ *   - It emits real OSC 8 hyperlinks in the login dialog, exports
+ *     `hyperlink(text, url)` from @earendil-works/pi-tui, and its line
+ *     compositor is OSC-8 aware (it tracks open links across overlays).
+ *
+ * The gap: assistant markdown never gets OSC 8, so the *label* of a link is not
+ * clickable — only the visible URL is, and only via terminal auto-detection.
+ * This extension closes that with a display-only markdown transformer, so
+ * `[the PR](https://…)` becomes clickable on the words "the PR".
+ *
+ * Display-only by construction: registerMarkdownTransformer never alters the
+ * stored message or what the model sees, so no escape codes enter context.
+ *
+ * Safety rails:
+ *   - No-ops when the terminal can't do OSC 8 (getCapabilities().hyperlinks),
+ *     so dumb terminals/pipes never get escape soup. `PI_HYPERLINKS=1` forces
+ *     detection on (needed for tmux passthrough); config can force it too.
+ *   - Skips fenced code blocks and inline code, so anything you might copy
+ *     stays byte-exact.
+ *   - Skips streaming updates: a partial link would be mangled mid-flight.
+ *     Links become clickable when the message finalizes.
+ *
+ * `/linktest` renders known-good OSC 8 through the entry-renderer path (the
+ * same path the login dialog uses) so you can tell "my terminal can't do OSC 8"
+ * apart from "the markdown path didn't apply it".
+ *
+ * Config (optional): ~/.pi/agent/clickable-links.json
+ *   {
+ *     "enabled": true,
+ *     "force": false,            // emit OSC 8 even if capability detection says no
+ *     "linkBareUrls": true,      // wrap bare https://… too (not just [label](url))
+ *     "includeThinking": false,  // also linkify thinking blocks
+ *     "skipCode": true           // leave fenced/inline code untouched
+ *   }
+ */
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text, getCapabilities, hyperlink } from "@earendil-works/pi-tui";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const TEST_ENTRY = "clickable-links-test";
+const OSC8_MARKER = "\x1b]8;;";
+
+interface Config {
+  enabled: boolean;
+  force: boolean;
+  linkBareUrls: boolean;
+  includeThinking: boolean;
+  skipCode: boolean;
+}
+
+function loadConfig(): Config {
+  const defaults: Config = {
+    enabled: true,
+    force: false,
+    linkBareUrls: true,
+    includeThinking: false,
+    skipCode: true,
+  };
+  try {
+    const dir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+    const raw = JSON.parse(readFileSync(join(dir, "clickable-links.json"), "utf8"));
+    return {
+      enabled: raw.enabled !== false,
+      force: raw.force === true,
+      linkBareUrls: raw.linkBareUrls !== false,
+      includeThinking: raw.includeThinking === true,
+      skipCode: raw.skipCode !== false,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+/** Trailing characters that are almost always sentence punctuation, not URL. */
+function splitTrailingPunctuation(url: string): [string, string] {
+  const m = /[.,;:!?)\]}'"]+$/.exec(url);
+  if (!m) return [url, ""];
+  // Keep a balanced closing paren that belongs to the URL (wiki-style links).
+  let cut = m.index;
+  const trailer = url.slice(cut);
+  if (trailer.startsWith(")")) {
+    const opens = (url.slice(0, cut).match(/\(/g) ?? []).length;
+    const closes = (url.slice(0, cut).match(/\)/g) ?? []).length;
+    if (opens > closes) cut += 1;
+  }
+  return [url.slice(0, cut), url.slice(cut)];
+}
+
+/**
+ * One pass over a plain-text segment, handling (in precedence order):
+ *   [label](url) -> label is clickable
+ *   <url>        -> url is clickable
+ *   bare url     -> url is clickable
+ */
+function linkifySegment(text: string, linkBareUrls: boolean): string {
+  const pattern = linkBareUrls
+    ? /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|<(https?:\/\/[^\s>]+)>|(https?:\/\/[^\s<>"'`]+)/g
+    : /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|<(https?:\/\/[^\s>]+)>/g;
+  return text.replace(pattern, (match, label, mdUrl, angleUrl, bareUrl) => {
+    if (typeof mdUrl === "string") {
+      // Keep the markdown shape so pi still styles and shows the URL; only
+      // the label becomes clickable.
+      return `[${hyperlink(String(label), mdUrl)}](${mdUrl})`;
+    }
+    if (typeof angleUrl === "string") return `<${hyperlink(angleUrl, angleUrl)}>`;
+    if (typeof bareUrl === "string") {
+      const [url, trailer] = splitTrailingPunctuation(bareUrl);
+      if (!url) return match;
+      return hyperlink(url, url) + trailer;
+    }
+    return match;
+  });
+}
+
+/** Apply `fn` only outside fenced code blocks and inline code spans. */
+function outsideCode(markdown: string, fn: (segment: string) => string): string {
+  // Fences first: ``` or ~~~ blocks, kept verbatim.
+  const fenceSplit = markdown.split(/(^```[\s\S]*?^```|^~~~[\s\S]*?^~~~)/m);
+  return fenceSplit
+    .map((chunk, i) => {
+      if (i % 2 === 1) return chunk; // a fenced block
+      // Then inline code spans within prose.
+      return chunk
+        .split(/(`+[^`\n]*`+)/)
+        .map((piece, j) => (j % 2 === 1 ? piece : fn(piece)))
+        .join("");
+    })
+    .join("");
+}
+
+export default function (pi: ExtensionAPI) {
+  let cfg = loadConfig();
+
+  const hyperlinksUsable = (): boolean => {
+    if (cfg.force) return true;
+    try {
+      return getCapabilities().hyperlinks === true;
+    } catch {
+      return false;
+    }
+  };
+
+  pi.on("session_start", async () => {
+    cfg = loadConfig();
+  });
+
+  pi.registerMarkdownTransformer((markdown, { messageType, isStreaming }) => {
+    if (!cfg.enabled) return markdown;
+    // A partial link cut mid-token would be rewritten wrong; wait for the
+    // finalized message (this hook runs again on finalize and on restore).
+    if (isStreaming) return markdown;
+    if (messageType === "assistant-thinking" && !cfg.includeThinking) return markdown;
+    if (markdown.includes(OSC8_MARKER)) return markdown; // already linked
+    if (!markdown.includes("http")) return markdown; // cheap bail
+    if (!hyperlinksUsable()) return markdown;
+    const linkify = (segment: string) => linkifySegment(segment, cfg.linkBareUrls);
+    return cfg.skipCode ? outsideCode(markdown, linkify) : linkify(markdown);
+  });
+
+  // ---- Self-test surface -------------------------------------------------
+  // Renders raw OSC 8 through the entry-renderer path, which is exactly how
+  // pi's own login dialog emits clickable URLs. If these are clickable but
+  // links in replies are not, the markdown path is the problem; if neither is,
+  // the terminal (or tmux passthrough) is.
+  pi.registerEntryRenderer(TEST_ENTRY, (_entry, _opts, theme) => {
+    const url = "https://github.com/erikdarlingdata/claude-plugins";
+    const caps = (() => {
+      try {
+        return String(getCapabilities().hyperlinks);
+      } catch {
+        return "unknown";
+      }
+    })();
+    const modifier = process.platform === "darwin" ? "Cmd+click" : "Ctrl+click";
+    const lines = [
+      theme.fg("accent", "clickable-links self-test"),
+      theme.fg("dim", `  capability: hyperlinks=${caps} · PI_HYPERLINKS=${process.env.PI_HYPERLINKS ?? "(unset)"}`),
+      `  1. OSC 8 on text:  ${theme.fg("mdLink", hyperlink("click these words", url))}`,
+      `  2. OSC 8 on URL:   ${theme.fg("mdLink", hyperlink(url, url))}`,
+      `  3. Bare URL (terminal auto-detect): ${theme.fg("mdLinkUrl", url)}`,
+      theme.fg("dim", `  ${modifier} each one. 1+2 clickable = OSC 8 works. Only 3 = terminal auto-detect only.`),
+    ];
+    return new Text(lines.join("\n"), 0, 0);
+  });
+
+  pi.registerCommand("linktest", {
+    description: "Render OSC 8 hyperlink samples to check what your terminal supports",
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) return;
+      pi.appendEntry(TEST_ENTRY, { at: Date.now() });
+    },
+  });
+}
+```
+
+## 6. The extension stack
 
 This is the tested-together set. Install order doesn't matter, but **restart pi
 fully after installing** (`/reload` does not reliably pick up new packages).
@@ -83,9 +618,9 @@ pi install npm:pi-memory               # persistent memory + search across sessi
 pi install npm:pi-messenger            # multi-agent mesh: rooms, tasks, file reservations
 pi install npm:pi-intercom             # 1:1 messaging between pi sessions on this machine
 pi install npm:pi-background-tasks     # long-running commands with completion wake-ups
-pi install npm:pi-agent-browser-native # real browser automation (needs binary, see §6)
+pi install npm:pi-agent-browser-native # real browser automation (needs binary, see §7)
 pi install npm:pi-web-access           # web search / fetch / GitHub / PDF / YouTube
-pi install npm:pi-web-ui               # browser cockpit for pi (see §6)
+pi install npm:pi-web-ui               # browser cockpit for pi (see §7)
 pi install npm:pi-cc-extensions        # Claude Code-style TUI polish (/ccstyle)
 ```
 
@@ -224,69 +759,223 @@ the tab title — `⏳ <session>` while running, `✅ <session>` when settled, `
 <session>` at rest — and rings the terminal bell on settle, which Ghostty and
 iTerm2 render as an attention indicator on unfocused tabs. It hooks
 `agent_settled` (not `agent_end`), so ✅ means *actually done*: auto-retries,
-auto-compaction, and queued follow-ups exhausted. Save as
+auto-compaction, and queued follow-ups exhausted. It also shows `⌨` while a
+blocking prompt waits on you (that's what pi's `ui_prompt_start`/`ui_prompt_end`
+events are for), and re-asserts the title every 5s against `ctx.isIdle()` —
+without that reconciler the indicator is edge-triggered, so one lost OSC write
+(easy in fullscreen mode, where pi repaints whole frames) strands the wrong
+glyph until the next run. Save as
 `~/.pi/agent/extensions/tab-status.ts`, then `/reload`:
 
 ```typescript
 /**
- * Tab Status Extension — agent working state in the terminal tab title.
+ * Tab Status Extension
+ *
+ * Shows the agent's working state in the terminal tab title:
+ *   ⏳ <session>  while the agent is running
+ *   ⌨ <session>  while a blocking prompt is waiting on YOU (select/confirm/input/editor)
+ *   ✅ <session>  when it settles (no auto-retry/follow-up pending) — sticky until the next run
+ *   π <session>   at rest
+ *
+ * TWO BUGS THIS FILE HAS ALREADY HAD, both worth remembering:
+ *
+ * 1. RAW STDOUT WRITES. The first two versions set the title by writing OSC 0
+ *    (`\x1b]0;…\x07`) straight to process.stdout. That works in regular TUI mode,
+ *    where the terminal owns the screen — and silently does nothing in fullscreen
+ *    (alt-screen) mode, where pi owns stdout and repaints whole frames. The tab
+ *    then freezes on whatever glyph was last written before the mode switch.
+ *    pi has a first-class API for this, `ctx.ui.setTitle()`, which routes through
+ *    pi's renderer (and becomes an extension_ui_request in RPC mode instead of
+ *    raw bytes). Use it. The raw path is kept only as a fallback for a pi too old
+ *    to expose setTitle.
+ *
+ * 2. EDGE-TRIGGERED STATE. Before, ⏳ was written on agent_start and cleared only
+ *    on agent_settled, with nothing re-asserting truth. Any single lost write
+ *    stranded the wrong glyph until the next run, and a run that ended without
+ *    settling (abort, fatal error) stranded it indefinitely. So the title is now
+ *    level-triggered: a low-frequency tick re-derives state from ctx.isIdle() and
+ *    rewrites it, which self-heals.
+ *
+ * ✅ stays sticky while idle rather than decaying to π, because "finished, come
+ * look" is the whole point on an unfocused tab. Only a new run clears it.
+ *
+ * `/tabstatus` prints what this extension believes, which is the only way to tell
+ * "wrong state" apart from "correct state that never reached the terminal".
+ *
  * TUI-only: headless/rpc/subagent runs emit nothing.
  */
 
 import type {
-  ExtensionAPI,
-  ExtensionContext,
+	ExtensionAPI,
+	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { basename } from "node:path";
 import process from "node:process";
 
 const RING_BELL_ON_SETTLE = true;
+/** How often to re-assert the title, healing a missed transition. */
+const RECONCILE_MS = 5_000;
+
+type State = "rest" | "running" | "waiting" | "settled";
+
+const GLYPH: Record<State, string> = {
+	rest: "π",
+	running: "⏳",
+	waiting: "⌨",
+	settled: "✅",
+};
 
 function label(ctx: ExtensionContext): string {
-  const name = ctx.sessionManager.getSessionName();
-  return name && name.trim() ? name : basename(process.cwd());
-}
-
-function setTitle(text: string): void {
-  // OSC 0 sets icon name + window/tab title; BEL-terminated.
-  process.stdout.write(`\x1b]0;${text}\x07`);
+	const name = ctx.sessionManager.getSessionName();
+	return name && name.trim() ? name : basename(process.cwd());
 }
 
 export default function (pi: ExtensionAPI) {
-  const inTui = (ctx: ExtensionContext) => ctx.mode === "tui";
+	const inTui = (ctx: ExtensionContext) => ctx.mode === "tui";
+	let ctx: ExtensionContext | undefined;
+	let state: State = "rest";
+	let promptDepth = 0;
+	let timer: ReturnType<typeof setInterval> | undefined;
+	let usedApi = false;
+	let lastTitle = "";
 
-  pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
-    if (!inTui(ctx)) return;
-    setTitle(`π ${label(ctx)}`);
-  });
+	const writeTitle = (text: string) => {
+		lastTitle = text;
+		const ui = ctx?.ui as { setTitle?: (t: string) => void } | undefined;
+		if (typeof ui?.setTitle === "function") {
+			usedApi = true;
+			ui.setTitle(text);
+			return;
+		}
+		// Fallback only: pi without setTitle. Unsafe in fullscreen mode.
+		usedApi = false;
+		process.stdout.write(`\x1b]0;${text}\x07`);
+	};
 
-  pi.on("session_info_changed", (_event: unknown, ctx: ExtensionContext) => {
-    if (!inTui(ctx)) return;
-    setTitle(`${ctx.isIdle() ? "π" : "⏳"} ${label(ctx)}`);
-  });
+	const apply = () => {
+		if (!ctx) return;
+		writeTitle(`${GLYPH[state]} ${label(ctx)}`);
+	};
 
-  pi.on("agent_start", (_event: unknown, ctx: ExtensionContext) => {
-    if (!inTui(ctx)) return;
-    setTitle(`⏳ ${label(ctx)}`);
-  });
+	const set = (next: State) => {
+		state = next;
+		apply();
+	};
 
-  // agent_settled (not agent_end): fires only when pi will not continue on
-  // its own — no pending auto-retry, auto-compact, or queued follow-up.
-  pi.on("agent_settled", (_event: unknown, ctx: ExtensionContext) => {
-    if (!inTui(ctx)) return;
-    setTitle(`✅ ${label(ctx)}`);
-    if (RING_BELL_ON_SETTLE) process.stdout.write("\x07");
-  });
+	/** Re-derive from the one real source of truth and rewrite unconditionally. */
+	const reconcile = () => {
+		if (!ctx) return;
+		if (promptDepth > 0) {
+			state = "waiting";
+		} else {
+			let idle = true;
+			try {
+				idle = ctx.isIdle();
+			} catch {
+				idle = true;
+			}
+			if (idle) {
+				if (state !== "settled") state = "rest"; // keep ✅ sticky
+			} else {
+				state = "running";
+			}
+		}
+		apply();
+	};
 
-  pi.on("session_shutdown", (_event: unknown, ctx: ExtensionContext) => {
-    if (!inTui(ctx)) return;
-    // Clear our title so the shell/terminal takes back over.
-    setTitle("");
-  });
+	pi.on("session_start", (_event: unknown, c: ExtensionContext) => {
+		if (!inTui(c)) return;
+		ctx = c;
+		promptDepth = 0;
+		set("rest");
+		// Deferred to session_start, not the factory: extensions must not start
+		// background resources in a run that may never open a session.
+		if (timer) clearInterval(timer);
+		timer = setInterval(reconcile, RECONCILE_MS);
+		timer.unref?.();
+	});
+
+	pi.on("session_info_changed", (_event: unknown, c: ExtensionContext) => {
+		if (!inTui(c)) return;
+		ctx = c;
+		reconcile();
+	});
+
+	pi.on("agent_start", (_event: unknown, c: ExtensionContext) => {
+		if (!inTui(c)) return;
+		ctx = c;
+		set("running");
+	});
+
+	// agent_settled (not agent_end): fires only when pi will not continue on
+	// its own — no pending auto-retry, auto-compact, or queued follow-up.
+	pi.on("agent_settled", (_event: unknown, c: ExtensionContext) => {
+		if (!inTui(c)) return;
+		ctx = c;
+		set("settled");
+		// Best-effort: Ghostty/iTerm2 turn BEL into a tab attention marker. There
+		// is no pi API for the bell, so this is a raw write and may not survive
+		// fullscreen mode — the title is the load-bearing signal.
+		if (RING_BELL_ON_SETTLE) process.stdout.write("\x07");
+	});
+
+	// These exist so status integrations can say "waiting for user" instead of
+	// "running" — without them a /watchdog panel or external editor reads as ⏳.
+	pi.on("ui_prompt_start", (_event: unknown, c: ExtensionContext) => {
+		if (!inTui(c)) return;
+		ctx = c;
+		promptDepth += 1;
+		set("waiting");
+	});
+
+	pi.on("ui_prompt_end", (_event: unknown, c: ExtensionContext) => {
+		if (!inTui(c)) return;
+		ctx = c;
+		promptDepth = Math.max(0, promptDepth - 1);
+		reconcile();
+	});
+
+	pi.on("session_shutdown", (_event: unknown, c: ExtensionContext) => {
+		if (timer) {
+			clearInterval(timer);
+			timer = undefined;
+		}
+		if (!inTui(c)) return;
+		writeTitle(""); // hand the title back to the shell
+		ctx = undefined;
+	});
+
+	pi.registerCommand("tabstatus", {
+		description: "Show what tab-status believes about the session (debug)",
+		handler: async (_args, c) => {
+			if (!c.hasUI) return;
+			let idle: boolean | string;
+			try {
+				idle = c.isIdle();
+			} catch (err) {
+				idle = `threw: ${err instanceof Error ? err.message : String(err)}`;
+			}
+			const ui = c.ui as { setTitle?: unknown };
+			c.ui.notify(
+				[
+					`tab-status debug`,
+					`  state: ${state} (${GLYPH[state]})`,
+					`  isIdle(): ${String(idle)}`,
+					`  promptDepth: ${promptDepth}`,
+					`  reconciler: ${timer ? `every ${RECONCILE_MS / 1000}s` : "NOT RUNNING"}`,
+					`  ctx.ui.setTitle available: ${typeof ui.setTitle === "function"}`,
+					`  last write used: ${usedApi ? "ctx.ui.setTitle (supported)" : "raw OSC 0 (fallback)"}`,
+					`  last title written: ${JSON.stringify(lastTitle)}`,
+					`  mode: ${c.mode}`,
+				].join("\n"),
+				"info",
+			);
+		},
+	});
 }
 ```
 
-## 6. External binaries some extensions need
+## 7. External binaries some extensions need
 
 ```bash
 # Required by pi-agent-browser-native (the actual browser engine):
@@ -307,7 +996,7 @@ install "succeeds" but the binary is missing, rerun with:
 npm install -g --allow-scripts=agent-browser agent-browser
 ```
 
-## 7. Verify everything (5 minutes)
+## 8. Verify everything (5 minutes)
 
 1. Start pi; the startup header lists every loaded package; failures show there.
 2. Browser: ask pi to *"open <https://example.com> and take an interactive
@@ -320,7 +1009,7 @@ npm install -g --allow-scripts=agent-browser agent-browser
 6. Second terminal, same folder: `/intercom` or Alt+M to message your other
    session.
 
-## 8. Daily-driver commands
+## 9. Daily-driver commands
 
 | | |
 | --- | --- |
@@ -332,10 +1021,11 @@ npm install -g --allow-scripts=agent-browser agent-browser
 | `@` | fuzzy file search; `@agentname text` messages a subagent |
 | Ctrl+P | cycle scoped models (set the list with `/scoped-models`) |
 | Ctrl+G / Ctrl+V | external editor / paste image |
+| Ctrl+X | copy the last assistant message (or the selected one in `/tree`) |
 | Ctrl+O / Ctrl+T | collapse tool output / thinking blocks |
 | `/export`, `/share` | HTML export / gist link |
 
-## 9. Migrating in-flight Claude Code work
+## 10. Migrating in-flight Claude Code work
 
 Pi can't import Claude transcripts (different format), but you don't need it to:
 
@@ -379,7 +1069,7 @@ Rule of thumb: **push conventions, point at archives.** A rule that must never
 be violated ("this file is never machine-written") belongs verbatim in the
 context file agents always see; everything else is one `ls` away.
 
-## 10. Where everything lives
+## 11. Where everything lives
 
 ```
 ~/.pi/agent/settings.json     global settings + package list
@@ -398,7 +1088,7 @@ Docs live at
 `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/docs/`, or
 just ask pi about itself; it reads its own documentation.
 
-## 11. Session auto-resume after reboots
+## 12. Session auto-resume after reboots
 
 Claude Code needed SessionStart/SessionEnd hooks plus a boot script to bring
 back your sessions after an update or restart. The pi version ships in the same
@@ -439,56 +1129,98 @@ Rules a user should know:
 Full design notes and TCC troubleshooting:
 `plugins/pi-session-resume/README.md` in the package repo.
 
-## 12. Runaway subagent watchdog
+## 13. Runaway subagent watchdog
 
-pi-subagents' background children only report back at completion — nothing
-wakes the orchestrator while one wedges on a giant grep, quietly compacts, or
-balloons from 200k to 2M tokens. There is no token budget anywhere in the
-stack (`max_turns` caps iterations, not spend). The `pi-subagent-watchdog`
-extension ships in the same claude-plugins package as §11, so if you ran that
-`pi install` it's already loaded (requires `@tintinweb/pi-subagents` from §5):
+pi-subagents' background children only report back at completion — nothing wakes
+the orchestrator while one wedges on a giant grep, quietly compacts, or balloons
+from 200k to 2M tokens. There is no token budget anywhere in the stack:
+`max_turns` caps iterations, not spend. The `pi-subagent-watchdog` extension
+ships in the same claude-plugins package as §12, so if you ran that `pi install`
+it is already loaded (it needs `@tintinweb/pi-subagents` from §6):
 
 ```bash
 pi install git:github.com/erikdarlingdata/claude-plugins
 ```
 
-It polls every running top-level subagent's live vitals (tokens, context %,
-tool uses, transcript-derived turns, wall clock, compactions) and on any
-threshold breach injects a numbered check-in into the main conversation —
-vitals, the child's recent tool calls, and a decision protocol — so the
-orchestrator assesses: on track, steer it, or stop it. A `🐕 N` footer status
+(Don't *also* hand-copy the extension into `~/.pi/agent/extensions/` — the
+package already ships it, and two copies register the same `/watchdog` command
+and `subagent_vitals` tool, which pi refuses at startup. Same trap as the
+`session-registry.ts` note in §12.)
+
+It polls each running top-level subagent's live vitals — tokens, context %, tool
+uses, transcript-derived turns, wall clock, compactions — and when a threshold
+crosses, injects a check-in into the main conversation: what crossed, the
+agent's most recent tool calls, and a decision protocol. A `🐕 N` footer status
 shows while agents are watched.
 
-| Surface | What it does |
+### The watchdog's own token tax
+
+A check-in *is* an LLM turn, so a naive watchdog amplifies the spend it exists to
+police. Four knobs bound that:
+
+| Knob | Default | What it bounds |
+| --- | --- | --- |
+| `batchWindowMs` | 5000 | agents breaching near each other collapse into ONE wake |
+| `globalCooldownMs` | 60000 | minimum gap between wakes across the whole fleet |
+| `maxCheckInsPerAgent` | 2 | automatic wakes per agent (manual `/watchdog` check-ins bypass it) |
+| `auditTrail` | true | full records go to `subagent-watchdog-audit` custom entries, which never enter LLM context |
+
+So the model-facing message stays compact while the forensics — every retained
+tool call, the thresholds crossed, the action taken, and every *cancelled*
+check-in with its reason — land on disk for humans and `jq`. In guide mode a
+signal the agent has never crossed before can still speak once past the cap, so
+a genuinely new failure mode isn't silenced by a quota.
+
+### Modes
+
+- **`guide`** (default) — the check-in asks the orchestrator to assess: on
+  track, lost, or runaway. Healthy agents run free.
+- **`strict`** — thresholds are budgets: wrap up by default, continuation
+  requires cited evidence, and check-in #2 means the exception is spent.
+
+Strict mode is careful about what it can actually promise. An ordinary steering
+message **cannot** change a running agent's `max_turns` — that ceiling is
+captured at spawn and never re-read — so the check-in only names the real
+`extend_subagent` tool when that tool is actually present, and otherwise says
+plainly that this version cannot extend a live ceiling and asks the orchestrator
+to simply choose not to send a wrap-up steer. Capability is read from the live
+active-tool set at delivery time, so it starts naming the tool the moment it
+exists, with no restart.
+
+### Model invariant (optional)
+
+`models.required` pins an exact effective `provider/model-id` for every watched
+top-level agent, read from the **live session** so it holds across every spawn
+path rather than only the Agent tool. A mismatch is audited and either notified
+(default) or hard-stopped. Get the string by running `/watchdog status` and
+copying it — an invalid value disables enforcement loudly instead of flagging
+every agent. This is defense-in-depth: forcing the model before launch belongs
+in pi-subagents.
+
+### Surfaces
+
+| | |
 | --- | --- |
-| `/watchdog` | panel: pick a running agent → vitals / manual check-in / steer / hard stop |
-| `/watchdog help` | full command + settings reference |
-| `/watchdog config` | edit config in pi's editor, JSON-validated, applied live |
-| `/watchdog reload` | apply a hand-edited config without restarting the session |
-| `subagent_vitals` tool | the orchestrator's one-call fleet health snapshot |
+| `/watchdog` | panel: pick a running agent → vitals / check-in / steer / hard stop |
+| `/watchdog status` | thresholds, capabilities, watched agents |
+| `/watchdog config` | edit config in pi's editor — validated, applied live |
+| `/watchdog reload` | re-read config after hand-editing, no restart |
+| `/watchdog help` | full settings reference |
+| `subagent_vitals` | the orchestrator's one-call fleet snapshot |
 
-Config: `~/.pi/agent/subagent-watchdog.json` (project override:
-`.pi/subagent-watchdog.json`). The interesting knob is `mode`:
+Config: `~/.pi/agent/subagent-watchdog.json`, project override
+`.pi/subagent-watchdog.json`. Optional `hardStop` auto-aborts past a hard limit
+and reports the outcome **from the RPC reply**, so a failed stop says "still
+running, do not respawn" instead of lying.
 
-- **`guide`** (default) — check-ins ask the orchestrator to *assess*; healthy
-  agents run free. For interactive work where task sizes vary.
-- **`strict`** — thresholds are **budgets**: default action is a wrap-up
-  steer; continuation requires cited convergence evidence plus ONE named
-  bounded extension ("+2 minutes"), and check-in #2 means the extension is
-  spent. For cost-capped or unattended fleets.
+Two facts worth knowing even if you never install it: a steer **cannot**
+interrupt a running tool call (it queues until the tool returns — only a hard
+stop breaks a wedged execution), and **wall clock is the only signal that
+catches a wedged tool**, because a child stuck inside one giant grep shows
+frozen token and turn counters. Full docs:
+[`plugins/pi-subagent-watchdog/README.md`](plugins/pi-subagent-watchdog/README.md).
 
-Optional `hardStop` block auto-aborts past a hard limit, with the outcome
-reported from the RPC reply (a failed stop says "still running, do not
-respawn" instead of lying).
-
-Two facts worth knowing even without the extension: a **steer cannot
-interrupt a running tool call** (it queues until the tool returns — only a
-hard stop breaks a wedged execution), and **wall-clock time is the only
-signal that catches a wedged tool** (a child stuck in one giant grep shows
-frozen counters). Full docs:
-`plugins/pi-subagent-watchdog/README.md` in the claude-plugins repo.
-
-## 13. `!` commands: completion wake-ups + autocomplete
+## 14. `!` commands: completion wake-ups + autocomplete
 
 Two Claude Code habits `bang-notify.ts` restores. First: in Claude, the agent
 reacts when your `!` command finishes; in stock pi the output lands in context
@@ -715,13 +1447,13 @@ export default function (pi: ExtensionAPI) {
 }
 ```
 
-## 14. When something breaks
+## 15. When something breaks
 
 - **"Tool X conflicts with Y" at startup**: two extensions register the same
   tool. `pi remove npm:<one-of-them>`. The error names both paths.
 - **New package's tools missing**: fully quit and restart pi; `/reload` keeps
   stale compiled code.
-- **Binary "not found" after npm install**: the allow-scripts gotcha (§6).
+- **Binary "not found" after npm install**: the allow-scripts gotcha (§7).
 - **Model refusal / policy block**: Ctrl+P to the next scoped model, resend.
 - **400 "Mid-conversation reasoning effort (configuration_update) is not
   supported" after switching models mid-session**: the model's catalog
