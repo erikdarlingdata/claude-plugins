@@ -6,9 +6,11 @@
  * asleep — a child can burn 2M tokens grepping the known universe and nothing
  * wakes the parent. This extension watches every top-level subagent's live
  * vitals and, when any configurable signal threshold is crossed, injects a
- * check-in message into the main conversation (deliverAs: "steer",
- * triggerTurn: true) so the orchestrator assesses the child: on track, lost and
- * needing guidance, or runaway and needing a wrap-up order / stop.
+ * compact, fleet-batched check-in into the main conversation (deliverAs:
+ * "steer", triggerTurn: true) so the orchestrator assesses the child: on track,
+ * lost and needing guidance, or runaway and needing a wrap-up order / stop.
+ * Full breach/action details persist as structured custom entries that stay out
+ * of LLM context; fleet/per-agent rate limits bound the watchdog's own token tax.
  *
  * Data sources (all verified against @tintinweb/pi-subagents):
  *   - globalThis[Symbol.for("pi-subagents:manager")].getRecord(id) — the LIVE
@@ -54,11 +56,19 @@ interface Signals {
 interface WatchdogConfig {
   enabled: boolean;
   pollIntervalMs: number;
-  /** Minimum ms between check-in wakes for the same agent. */
+  /** Minimum ms between breach evaluations for the same agent. */
   cooldownMs: number;
+  /** Minimum ms between orchestrator wakes across the whole fleet. */
+  globalCooldownMs: number;
+  /** Collect nearby breaches into one orchestrator wake for this many ms. */
+  batchWindowMs: number;
+  /** Maximum automatic LLM check-ins per agent. Human-requested check-ins bypass this cap. */
+  maxCheckInsPerAgent: number;
+  /** Persist structured breach/action records as non-context custom entries. */
+  auditTrail: boolean;
   /** Re-alert a multiplicative signal when it reaches lastAlertedValue * factor. */
   renotifyFactor: number;
-  /** "wake" injects a check-in message for the orchestrator LLM; "notify" is UI-only. */
+  /** "wake" injects a batched check-in for the orchestrator LLM; "notify" is UI-only. */
   action: "wake" | "notify";
   /**
    * Orchestrator posture when signals are hit:
@@ -70,6 +80,16 @@ interface WatchdogConfig {
   /** Delivery mode for the wake message. "steer" interrupts after the current tool batch. */
   deliverAs: "steer" | "followUp";
   signals: Signals;
+  models: {
+    /** Exact effective provider/model id required for every watched top-level agent. */
+    required?: string | null;
+    /** A mismatch is either UI/audit-only or immediately stopped. */
+    onViolation: "hard-stop" | "notify";
+    /** Let the session populate its live model before treating unknown as a violation. */
+    unknownGraceMs: number;
+    /** Invalid configured policy, surfaced loudly while enforcement stays off. */
+    configurationError?: string;
+  };
   hardStop: {
     enabled: boolean;
     tokens?: number | null;
@@ -81,6 +101,10 @@ const DEFAULTS: WatchdogConfig = {
   enabled: true,
   pollIntervalMs: 15_000,
   cooldownMs: 90_000,
+  globalCooldownMs: 60_000,
+  batchWindowMs: 5_000,
+  maxCheckInsPerAgent: 2,
+  auditTrail: true,
   renotifyFactor: 2,
   action: "wake",
   mode: "guide",
@@ -92,6 +116,11 @@ const DEFAULTS: WatchdogConfig = {
     turns: 30,
     minutes: 10,
     compactions: 1,
+  },
+  models: {
+    required: null,
+    onViolation: "notify",
+    unknownGraceMs: 30_000,
   },
   hardStop: {
     enabled: false,
@@ -136,14 +165,30 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
     ...global,
     ...project,
     signals: { ...DEFAULTS.signals, ...global?.signals, ...project?.signals },
+    models: { ...DEFAULTS.models, ...global?.models, ...project?.models },
     hardStop: { ...DEFAULTS.hardStop, ...global?.hardStop, ...project?.hardStop },
-  } as Record<string, unknown> & { signals: Record<string, unknown>; hardStop: Record<string, unknown> };
+  } as Record<string, unknown> & {
+    signals: Record<string, unknown>;
+    models: Record<string, unknown>;
+    hardStop: Record<string, unknown>;
+  };
   // Sanitize — user JSON can hold strings, zeros, negatives (review finding #4).
   const enabledRaw = m.enabled;
+  const requiredModelInput = typeof m.models.required === "string" ? m.models.required.trim() : "";
+  const modelSlash = requiredModelInput.indexOf("/");
+  const hasProviderAndModel = modelSlash > 0 && modelSlash < requiredModelInput.length - 1;
+  const modelConfigurationError = requiredModelInput && !hasProviderAndModel
+    ? `models.required must be an exact provider/model id with non-empty segments; got "${requiredModelInput}". ` +
+      `Run /watchdog status and copy the effective model string.`
+    : undefined;
   return {
     enabled: enabledRaw !== false && enabledRaw !== "false" && enabledRaw !== 0,
     pollIntervalMs: num(m.pollIntervalMs, DEFAULTS.pollIntervalMs, 2_000),
     cooldownMs: num(m.cooldownMs, DEFAULTS.cooldownMs, 5_000),
+    globalCooldownMs: num(m.globalCooldownMs, DEFAULTS.globalCooldownMs, 5_000),
+    batchWindowMs: num(m.batchWindowMs, DEFAULTS.batchWindowMs, 0),
+    maxCheckInsPerAgent: Math.floor(num(m.maxCheckInsPerAgent, DEFAULTS.maxCheckInsPerAgent, 1)),
+    auditTrail: m.auditTrail !== false && m.auditTrail !== "false" && m.auditTrail !== 0,
     renotifyFactor: num(m.renotifyFactor, DEFAULTS.renotifyFactor, 1.1),
     action: m.action === "notify" ? "notify" : "wake",
     mode: m.mode === "strict" ? "strict" : "guide",
@@ -155,6 +200,12 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
       turns: optNum(m.signals.turns, DEFAULTS.signals.turns),
       minutes: optNum(m.signals.minutes, DEFAULTS.signals.minutes),
       compactions: optNum(m.signals.compactions, DEFAULTS.signals.compactions),
+    },
+    models: {
+      required: modelConfigurationError || !requiredModelInput ? null : requiredModelInput,
+      onViolation: m.models.onViolation === "hard-stop" ? "hard-stop" : "notify",
+      unknownGraceMs: num(m.models.unknownGraceMs, DEFAULTS.models.unknownGraceMs, 5_000),
+      configurationError: modelConfigurationError,
     },
     hardStop: {
       enabled: m.hardStop.enabled === true,
@@ -188,8 +239,18 @@ interface SubagentRecord {
   compactionCount?: number;
   outputFile?: string;
   lifetimeUsage?: { input?: number; output?: number; cacheWrite?: number; cacheRead?: number };
+  /** Effective model identity populated by pi-subagents once the child session exists. */
+  invocation?: {
+    modelName?: string;
+    modelId?: string;
+    thinking?: string;
+    requestedModel?: string;
+    requestedThinking?: string;
+  };
   session?: {
     getSessionStats?: () => { contextUsage?: { percent?: number } | null };
+    /** Live model exists on every running AgentSession, regardless of spawn path. */
+    state?: { model?: { provider?: string; id?: string } };
     /** Same call pi-subagents' own steerAgent() makes — injects a user message into the child. */
     steer?: (message: string) => Promise<void>;
   };
@@ -218,8 +279,15 @@ interface Watched {
   /** signal name -> value at the last alert that included it (re-arm bookkeeping). */
   alertedAt: Record<string, number>;
   hardStopped: boolean;
-  /** Check-ins delivered for this agent — numbers the header and powers strict escalation. */
+  /** All delivered check-ins, including human-requested ones, for display numbering. */
   wakeCount: number;
+  /** Automatic LLM wakes only — bounded by maxCheckInsPerAgent. */
+  automaticWakeCount: number;
+  /** One-shot latch for the post-spawn effective-model invariant. */
+  modelViolationHandled: boolean;
+  /** Current run identity + first tick where that run was actually observed running. */
+  observedStartedAt?: number;
+  firstRunningAt?: number;
   /** First tick where the registry had no record for this id (eviction grace timer). */
   missingSince?: number;
   /** Counter snapshot at the previous check-in — lets the next one say "unchanged". */
@@ -233,6 +301,22 @@ interface Vitals {
   turns: number;
   minutes: number;
   compactions: number;
+}
+
+interface PendingCheckIn {
+  id: string;
+  handle: string;
+  type: string;
+  description: string;
+  model?: string;
+  checkInNumber: number | null;
+  /** Guide mode may speak once for a signal this agent has never crossed. */
+  capExempt?: boolean;
+  vitals: Vitals;
+  breaches: Breach[];
+  advice: string[];
+  recentTools: string[];
+  reason?: string;
 }
 
 const MAX_TRANSCRIPT_READ = 8 * 1024 * 1024; // per tick, per agent
@@ -249,6 +333,8 @@ function newWatched(id: string, type: string, description: string): Watched {
     alertedAt: {},
     hardStopped: false,
     wakeCount: 0,
+    automaticWakeCount: 0,
+    modelViolationHandled: false,
   };
 }
 
@@ -419,6 +505,23 @@ function vitalsLine(v: Vitals): string {
   return parts.filter(Boolean).join(" · ");
 }
 
+function effectiveModelId(rec: SubagentRecord): string | undefined {
+  try {
+    const model = rec.session?.state?.model;
+    if (model?.provider && model.id) return `${model.provider}/${model.id}`;
+  } catch {
+    // A partial/disposing session falls back to the pre-session snapshot.
+  }
+  return rec.invocation?.modelId;
+}
+
+function modelLine(rec: SubagentRecord): string | undefined {
+  const model = effectiveModelId(rec) ?? rec.invocation?.modelName;
+  if (!model) return undefined;
+  const thinking = rec.invocation?.thinking;
+  return thinking ? `${model} · thinking ${thinking}` : model;
+}
+
 /**
  * Situational hints for the two known non-distress signatures, so the
  * orchestrator doesn't have to re-derive them from raw vitals on every wake.
@@ -429,10 +532,7 @@ function adviceLines(w: Watched, v: Vitals, breaches: Breach[]): string[] {
   // still empty (its write stream lags), so turns/recent-tools read as zero.
   if (v.toolUses === 0 && w.turns === 0) {
     return [
-      `Note: no completed tool calls yet — the agent's FIRST tool call is likely still executing ` +
-        `(the transcript lags a running tool, so turns/recent-tools read empty). A steer will queue ` +
-        `until that tool returns. You have no hard-stop tool; if the tool itself must be interrupted, ` +
-        `ask the user to run /watchdog → Hard stop.`,
+      `First tool likely still running; a steer will queue. Use /watchdog → Hard stop to interrupt it.`,
     ];
   }
   // Composing signature: only elapsed time crossed and every counter is
@@ -447,59 +547,72 @@ function adviceLines(w: Watched, v: Vitals, breaches: Breach[]): string[] {
     breaches.every((b) => b.name === "minutes")
   ) {
     return [
-      `Note: counters are unchanged since the previous check-in and only elapsed time crossed — ` +
-        `the agent is likely composing a long response or inside a long-running tool call. ` +
-        `Frozen-but-elapsed is not by itself distress; escalate only if it persists across another re-arm.`,
+      `Counters are unchanged and only elapsed crossed; likely composing or inside one long tool call.`,
     ];
   }
   return [];
 }
 
-interface CheckInOpts {
-  mode: "guide" | "strict";
-  /** 1-based; strict mode treats #2+ as "the extension is spent". */
-  checkInNumber: number;
-  /** Overrides the "Crossed: …" line (e.g. user-requested check-ins). */
-  reason?: string;
-  advice?: string[];
+function snapshotCheckIn(
+  w: Watched,
+  rec: SubagentRecord,
+  v: Vitals,
+  breaches: Breach[],
+  checkInNumber: number | null,
+  reason?: string,
+): PendingCheckIn {
+  return {
+    id: w.id,
+    handle: rec.alias ?? rec.handle ?? w.id,
+    type: w.type,
+    description: w.description,
+    model: modelLine(rec),
+    checkInNumber,
+    vitals: { ...v },
+    breaches: breaches.map((b) => ({ ...b })),
+    advice: adviceLines(w, v, breaches),
+    recentTools: [...w.recentTools],
+    reason,
+  };
 }
 
-function checkInMessage(w: Watched, rec: SubagentRecord, v: Vitals, breaches: Breach[], opts: CheckInOpts): string {
-  const handle = rec.alias ?? rec.handle ?? w.id;
+/** Compact LLM-facing message; the complete structured record lives in a non-context audit entry. */
+function checkInMessage(
+  items: PendingCheckIn[],
+  mode: "guide" | "strict",
+  turnExtensionAvailable: boolean,
+): string {
   const lines: string[] = [
-    `[subagent-watchdog] Check-in #${opts.checkInNumber} for agent "${handle}" (${w.type}, id ${w.id}) — "${w.description}".`,
-    opts.reason ?? `Crossed: ${breaches.map(fmtSignal).join(", ")}.`,
-    `Vitals: ${vitalsLine(v)}.`,
-    ...(opts.advice ?? []),
+    items.length === 1
+      ? `[subagent-watchdog] One agent crossed a guardrail:`
+      : `[subagent-watchdog] ${items.length} agents crossed guardrails (batched):`,
   ];
-  if (w.recentTools.length > 0) {
-    lines.push(`Recent tool calls (newest last):`);
-    for (const t of w.recentTools) lines.push(`  - ${t}`);
-  }
-  lines.push(``);
-  if (opts.mode === "strict") {
+  for (const item of items) {
+    const identity = [item.type, item.model].filter(Boolean).join(" · ");
+    const reason = item.reason ?? item.breaches.map(fmtSignal).join(", ");
+    const task = item.description.length > 100 ? `${item.description.slice(0, 100)}…` : item.description;
     lines.push(
-      `STRICT MODE — signal thresholds are budgets, and this agent has exceeded one.`,
-      `Default action: steer_subagent { agent_id: "${handle}", message: "Wrap up now — return your best results and list what remains incomplete. Do not start new work." }.`,
-      `Continuation is the exception: allow it ONLY if the recent tool calls show clear convergence on the assigned task. If you allow it, state the specific evidence and grant ONE bounded extension by name (e.g. "+2 minutes", "+50k tokens").`,
+      `- #${item.checkInNumber ?? "?"} "${item.handle}" (${identity}) — "${task}": ${reason}; ${vitalsLine(item.vitals)}.`,
     );
-    if (opts.checkInNumber >= 2) {
-      lines.push(
-        `This is check-in #${opts.checkInNumber} for this agent — any extension is spent. Steer it to wrap up now, or ask the user to stop it via /watchdog.`,
-      );
+    if (item.recentTools.length > 0) {
+      lines.push(`  recent: ${item.recentTools.slice(-2).join(" | ")}`);
     }
-  } else {
-    lines.push(
-      `Assess whether this agent is on track, lost, or runaway:`,
-      `- On track for a task of this size → no action; note why so you don't re-assess every alert.`,
-      `- Lost or needs guidance → steer_subagent { agent_id: "${handle}", message: "<specific corrective guidance>" }.`,
-      `- Runaway / over-broad (e.g. grepping everything, re-reading the same files) → steer it to stop, return partial results, and list what's incomplete.`,
-    );
+    for (const note of item.advice) lines.push(`  note: ${note}`);
   }
-  lines.push(
-    `You can inspect further with get_subagent_result { agent_id: "${handle}" } (non-blocking while running) or subagent_vitals.`,
-    `Do NOT spawn a duplicate agent while this one is running.`,
-  );
+  if (mode === "strict") {
+    lines.push(
+      turnExtensionAvailable
+        ? `STRICT: limits are budgets. Wrap up unless recent work proves convergence. ` +
+          `Continuation requires extend_subagent with additional_turns (1–1000) and a concrete reason. ` +
+          `Check-in #2 means the extension is spent.`
+        : `STRICT: limits are budgets. Wrap up each agent unless recent work proves convergence. ` +
+          `If you continue it, state the evidence and explicitly choose not to send a wrap-up steer; ` +
+          `this pi-subagents version cannot extend a live max_turns ceiling. Check-in #2 ends the exception.`,
+    );
+  } else {
+    lines.push(`Guide: on track → no action; lost → steer; runaway → wrap up. Do not spawn duplicates.`);
+  }
+  lines.push(`Use subagent_vitals for the full live snapshot; structured audit details are stored outside LLM context.`);
   return lines.join("\n");
 }
 
@@ -511,7 +624,10 @@ export default function (pi: ExtensionAPI) {
   let cfg: WatchdogConfig = { ...DEFAULTS };
   let ctx: ExtensionContext | undefined;
   const roster = new Map<string, Watched>();
+  const pendingCheckIns = new Map<string, PendingCheckIn>();
   let timer: ReturnType<typeof setInterval> | undefined;
+  let batchTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastGlobalWakeAt = 0;
   const unsubs: Array<() => void> = [];
 
   // --- Root-session ownership claim ---------------------------------------
@@ -537,6 +653,47 @@ export default function (pi: ExtensionAPI) {
 
   const notify = (msg: string, level: "info" | "warning" | "error" = "warning") => {
     if (ctx?.hasUI) ctx.ui.notify(msg, level);
+  };
+
+  const appendAudit = (kind: string, data: Record<string, unknown>) => {
+    if (!isOwner || !cfg.auditTrail) return;
+    try {
+      pi.appendEntry("subagent-watchdog-audit", {
+        version: 1,
+        kind,
+        recordedAt: new Date().toISOString(),
+        ...data,
+      });
+    } catch {
+      // Auditing must never interfere with containment.
+    }
+  };
+
+  const rearmCheckIn = (checkIn: PendingCheckIn) => {
+    const w = roster.get(checkIn.id);
+    if (!w) return;
+    w.lastWakeAt = 0;
+    for (const breach of checkIn.breaches) delete w.alertedAt[breach.name];
+  };
+
+  const cancelPendingCheckIn = (id: string, reason: string, rearm = false) => {
+    const checkIn = pendingCheckIns.get(id);
+    if (!checkIn) return;
+    pendingCheckIns.delete(id);
+    if (rearm) rearmCheckIn(checkIn);
+    appendAudit("check-in-cancelled", { agentId: id, reason, rearmed: rearm, checkIn });
+  };
+
+  const clearPendingCheckIns = (reason: string, rearm = false) => {
+    for (const id of [...pendingCheckIns.keys()]) cancelPendingCheckIn(id, reason, rearm);
+  };
+
+  const canExtendTurns = () => {
+    try {
+      return pi.getActiveTools().includes("extend_subagent");
+    } catch {
+      return false;
+    }
   };
 
   const setStatus = () => {
@@ -575,7 +732,10 @@ export default function (pi: ExtensionAPI) {
   };
 
   const untrack = (id: unknown) => {
-    if (typeof id === "string") roster.delete(id);
+    if (typeof id === "string") {
+      roster.delete(id);
+      cancelPendingCheckIn(id, "agent reached a terminal state before batch delivery");
+    }
     stopTimerIfIdle();
     setStatus();
   };
@@ -584,10 +744,20 @@ export default function (pi: ExtensionAPI) {
     // Optimistically latched so the poll loop doesn't re-fire while the stop is
     // in flight; reset on failure so retry / manual action stays possible.
     w.hardStopped = true;
+    cancelPendingCheckIn(w.id, "hard stop superseded the queued check-in");
     const handle = rec.alias ?? rec.handle ?? w.id;
     const requestId = randomUUID();
     const replyChannel = `subagents:rpc:stop:reply:${requestId}`;
     let settled = false;
+    appendAudit("hard-stop-requested", {
+      agentId: w.id,
+      handle,
+      agentType: w.type,
+      description: w.description,
+      model: modelLine(rec),
+      reason,
+      vitals: v,
+    });
     const tellOrchestrator = (content: string) => {
       pi.sendMessage(
         { customType: "subagent-watchdog", content, display: true },
@@ -607,6 +777,7 @@ export default function (pi: ExtensionAPI) {
       }
       if (reply?.success === true) {
         notify(`watchdog: hard-stopped agent "${handle}" (${reason})`);
+        appendAudit("hard-stop-succeeded", { agentId: w.id, handle, reason, vitals: v });
         tellOrchestrator(
           `[subagent-watchdog] HARD-STOPPED agent "${handle}" (${w.type}, id ${w.id}) — ${reason}.\n` +
             `Final observed vitals: ${vitalsLine(v)}.\n` +
@@ -616,6 +787,7 @@ export default function (pi: ExtensionAPI) {
         w.hardStopped = false;
         const detail = reply ? (reply.error ?? "unknown error") : "no reply from pi-subagents (stop verb unavailable?)";
         notify(`watchdog: hard-stop of "${handle}" FAILED: ${detail}`, "error");
+        appendAudit("hard-stop-failed", { agentId: w.id, handle, reason, detail, vitals: v });
         tellOrchestrator(
           `[subagent-watchdog] Hard-stop of agent "${handle}" (id ${w.id}) FAILED: ${detail}.\n` +
             `The agent is STILL RUNNING (${vitalsLine(v)}; trigger: ${reason}).\n` +
@@ -634,30 +806,135 @@ export default function (pi: ExtensionAPI) {
     pendingTimeouts.add(t);
   }
 
-  function wake(w: Watched, rec: SubagentRecord, v: Vitals, breaches: Breach[]) {
-    // If nothing would actually surface (notify-only mode with no UI), don't
-    // consume the breach — alertedAt/lastWakeAt advancing would silently
-    // double the re-arm threshold with zero delivery (review finding #7).
-    if (cfg.action !== "wake" && ctx?.hasUI !== true) return;
-    w.lastWakeAt = Date.now();
-    w.wakeCount += 1;
-    for (const b of breaches) w.alertedAt[b.name] = b.value;
-    const handle = rec.alias ?? rec.handle ?? w.id;
-    notify(`watchdog: "${handle}" crossed ${breaches.map((b) => b.name).join(", ")} — ${vitalsLine(v)}`);
-    if (cfg.action === "wake") {
+  function scheduleBatchFlush() {
+    if (batchTimer || pendingCheckIns.size === 0) return;
+    const sinceLastWake = Date.now() - lastGlobalWakeAt;
+    const globalDelay = lastGlobalWakeAt === 0 ? 0 : Math.max(0, cfg.globalCooldownMs - sinceLastWake);
+    batchTimer = setTimeout(flushCheckInBatch, Math.max(cfg.batchWindowMs, globalDelay));
+  }
+
+  function flushCheckInBatch() {
+    batchTimer = undefined;
+    if (!isOwner) {
+      pendingCheckIns.clear();
+      return;
+    }
+    if (!cfg.enabled) {
+      clearPendingCheckIns("watchdog disabled before batch delivery", true);
+      return;
+    }
+    if (cfg.action !== "wake") {
+      clearPendingCheckIns("action changed before batch delivery", true);
+      return;
+    }
+
+    const registry = getRegistry();
+    const items: PendingCheckIn[] = [];
+    for (const [id, item] of [...pendingCheckIns]) {
+      const rec = registry?.getRecord(id);
+      const w = roster.get(id);
+      if (!w || rec?.status !== "running") {
+        cancelPendingCheckIn(id, "agent was no longer running at batch delivery");
+        continue;
+      }
+      if (w.automaticWakeCount >= cfg.maxCheckInsPerAgent && !item.capExempt) {
+        cancelPendingCheckIn(id, "automatic check-in cap was reached before batch delivery");
+        continue;
+      }
+      pendingCheckIns.delete(id);
+      w.wakeCount += 1;
+      w.automaticWakeCount += 1;
+      item.checkInNumber = w.wakeCount;
+      items.push(item);
+    }
+    if (items.length === 0) return;
+
+    try {
       pi.sendMessage(
         {
           customType: "subagent-watchdog",
-          content: checkInMessage(w, rec, v, breaches, {
-            mode: cfg.mode,
-            checkInNumber: w.wakeCount,
-            advice: adviceLines(w, v, breaches),
-          }),
+          content: checkInMessage(items, cfg.mode, canExtendTurns()),
           display: true,
         },
         { deliverAs: cfg.deliverAs, triggerTurn: true },
       );
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      for (const item of items) {
+        const w = roster.get(item.id);
+        if (w) {
+          w.wakeCount = Math.max(0, w.wakeCount - 1);
+          w.automaticWakeCount = Math.max(0, w.automaticWakeCount - 1);
+          w.lastWakeAt = 0;
+          for (const breach of item.breaches) delete w.alertedAt[breach.name];
+        }
+        appendAudit("check-in-cancelled", {
+          agentId: item.id,
+          reason: "pi.sendMessage rejected the batch",
+          detail,
+          checkIn: item,
+        });
+      }
+      notify(`watchdog: batched check-in delivery failed: ${detail}`, "error");
+      return;
     }
+    lastGlobalWakeAt = Date.now();
+    appendAudit("check-in-batch-delivered", {
+      checkIns: items,
+      count: items.length,
+      mode: cfg.mode,
+      deliverAs: cfg.deliverAs,
+    });
+  }
+
+  function wake(w: Watched, rec: SubagentRecord, v: Vitals, breaches: Breach[]) {
+    // If nothing would actually surface (notify-only mode with no UI), don't
+    // consume the breach — alertedAt/lastWakeAt advancing would silently
+    // increase the re-arm threshold with zero delivery (review finding #7).
+    if (cfg.action !== "wake" && ctx?.hasUI !== true) return;
+
+    const newlyCrossedSignal = breaches.some((breach) => w.alertedAt[breach.name] === undefined);
+    w.lastWakeAt = Date.now();
+    for (const b of breaches) w.alertedAt[b.name] = b.value;
+    const handle = rec.alias ?? rec.handle ?? w.id;
+    notify(`watchdog: "${handle}" crossed ${breaches.map((b) => b.name).join(", ")} — ${vitalsLine(v)}`);
+
+    let delivery: "notify-only" | "queued" | "merged-queued" | "suppressed-cap" = "notify-only";
+    let item = snapshotCheckIn(w, rec, v, breaches, null);
+    item.capExempt = cfg.mode === "guide" && newlyCrossedSignal;
+    if (cfg.action === "wake") {
+      const pending = pendingCheckIns.get(w.id);
+      const capReached = w.automaticWakeCount >= cfg.maxCheckInsPerAgent;
+      if (pending && capReached && !pending.capExempt && !item.capExempt) {
+        cancelPendingCheckIn(w.id, "automatic check-in cap was reached before pending merge");
+        delivery = "suppressed-cap";
+      } else if (pending) {
+        const mergedBreaches = new Map<keyof Signals, Breach>();
+        for (const breach of [...pending.breaches, ...item.breaches]) mergedBreaches.set(breach.name, breach);
+        item = {
+          ...item,
+          breaches: [...mergedBreaches.values()],
+          advice: [...new Set([...pending.advice, ...item.advice])],
+          reason: pending.reason ?? item.reason,
+          capExempt: pending.capExempt || item.capExempt,
+        };
+        pendingCheckIns.set(w.id, item);
+        delivery = "merged-queued";
+        scheduleBatchFlush();
+      } else if (capReached && !item.capExempt) {
+        delivery = "suppressed-cap";
+        notify(
+          `watchdog: "${handle}" reached the automatic check-in cap (${cfg.maxCheckInsPerAgent}); breach stored in audit only`,
+          "info",
+        );
+      } else {
+        pendingCheckIns.set(w.id, item);
+        delivery = "queued";
+        scheduleBatchFlush();
+      }
+    }
+    appendAudit("breach", { delivery, checkIn: item });
+
     // Snapshot AFTER building advice, so the next wake compares against this one.
     w.lastSample = { tokens: v.tokens, toolUses: v.toolUses, turns: w.turns };
   }
@@ -681,8 +958,48 @@ export default function (pi: ExtensionAPI) {
         if (rec.status !== "queued") untrack(id); // terminal — completion event may have raced us
         continue;
       }
+      if (w.observedStartedAt !== rec.startedAt) {
+        w.observedStartedAt = rec.startedAt;
+        w.firstRunningAt = Date.now();
+        w.modelViolationHandled = false;
+      }
       if (rec.outputFile) updateFromTranscript(w, rec.outputFile);
       const v = readVitals(w, rec);
+
+      // Model policy is a post-spawn invariant, not the primary gate: the
+      // manager should force the model before launch, while this catches a
+      // bypass/regression and leaves a durable record of the effective id.
+      const requiredModel = cfg.models.required;
+      const effectiveModel = effectiveModelId(rec);
+      const unknownElapsedMs = Date.now() - (w.firstRunningAt ?? Date.now());
+      const unknownExpired = !effectiveModel && unknownElapsedMs >= cfg.models.unknownGraceMs;
+      const modelViolationReason = requiredModel && !w.modelViolationHandled
+        ? effectiveModel && effectiveModel !== requiredModel
+          ? `effective model ${effectiveModel} != required ${requiredModel}`
+          : unknownExpired
+            ? `effective model remained unknown for ${cfg.models.unknownGraceMs / 1000}s; required ${requiredModel}`
+            : undefined
+        : undefined;
+      if (requiredModel && modelViolationReason) {
+        w.modelViolationHandled = true;
+        const handle = rec.alias ?? rec.handle ?? w.id;
+        const reason = modelViolationReason;
+        appendAudit("model-policy-violation", {
+          agentId: w.id,
+          handle,
+          agentType: w.type,
+          description: w.description,
+          effectiveModel: effectiveModel ?? null,
+          requiredModel,
+          action: cfg.models.onViolation,
+          vitals: v,
+        });
+        notify(`watchdog: model policy violation for "${handle}": ${reason}`, "error");
+        if (cfg.models.onViolation === "hard-stop") {
+          hardStop(w, rec, v, reason);
+          continue;
+        }
+      }
 
       // Hard stop first — it supersedes a check-in.
       if (cfg.hardStop.enabled && !w.hardStopped) {
@@ -739,15 +1056,24 @@ export default function (pi: ExtensionAPI) {
     if (!isOwner) return;
     ctx = c;
     cfg = loadConfig(c.cwd, c.isProjectTrusted());
+    if (cfg.models.configurationError) {
+      notify(`watchdog: ${cfg.models.configurationError}`, "error");
+      appendAudit("configuration-error", { message: cfg.models.configurationError });
+    }
     // Roster is process-memory; a /resume mid-run of children can't be
     // reconstructed reliably, so start clean. Running agents will still be
     // caught if pi-subagents re-emits started (queued starts) — otherwise the
     // next spawn re-arms the watchdog.
+    clearPendingCheckIns("session restarted before batch delivery", true);
     roster.clear();
+    lastGlobalWakeAt = 0;
     setStatus();
   });
 
   pi.on("session_shutdown", async () => {
+    // Record cancellations while the old session API and ownership claim are
+    // still valid; custom audit entries do not enter LLM context.
+    if (isOwner) clearPendingCheckIns("session shut down before batch delivery", true);
     // Release the claim only if this activation holds it — a child instance's
     // shutdown must not delete the root's slot.
     if (isOwner && g[OWNER_KEY] === instanceId) delete g[OWNER_KEY];
@@ -757,6 +1083,10 @@ export default function (pi: ExtensionAPI) {
     if (timer) {
       clearInterval(timer);
       timer = undefined;
+    }
+    if (batchTimer) {
+      clearTimeout(batchTimer);
+      batchTimer = undefined;
     }
     for (const u of unsubs.splice(0)) {
       try {
@@ -773,8 +1103,8 @@ export default function (pi: ExtensionAPI) {
     name: "subagent_vitals",
     label: "Subagent Vitals",
     description:
-      "Live vitals for all currently watched (running) subagents: tokens, tool uses, derived turns, " +
-      "context %, compactions, elapsed time, and each agent's most recent tool calls. " +
+      "Live identity and vitals for all currently watched (running) subagents: effective model, tokens, " +
+      "tool uses, derived turns, context %, compactions, elapsed time, and recent tool calls. " +
       "Use this when a subagent-watchdog check-in arrives, or any time you want a fleet health snapshot " +
       "without consuming results.",
     parameters: Type.Object({}),
@@ -787,14 +1117,21 @@ export default function (pi: ExtensionAPI) {
               text: "subagent-watchdog is dormant in this session (not the root orchestrator session).",
             },
           ],
+          details: {},
         };
       }
       const registry = getRegistry();
       if (!registry) {
-        return { content: [{ type: "text" as const, text: "pi-subagents is not active in this session." }] };
+        return {
+          content: [{ type: "text" as const, text: "pi-subagents is not active in this session." }],
+          details: {},
+        };
       }
       if (roster.size === 0) {
-        return { content: [{ type: "text" as const, text: "No subagents currently watched (none running)." }] };
+        return {
+          content: [{ type: "text" as const, text: "No subagents currently watched (none running)." }],
+          details: {},
+        };
       }
       const blocks: string[] = [];
       for (const [id, w] of roster) {
@@ -809,6 +1146,7 @@ export default function (pi: ExtensionAPI) {
         const lines = [
           `agent "${handle}" (${w.type}, id ${id}) — status ${rec.status}`,
           `  task: ${w.description}`,
+          ...(modelLine(rec) ? [`  model: ${modelLine(rec)}`] : []),
           `  vitals: ${vitalsLine(v)}`,
         ];
         if (w.recentTools.length > 0) {
@@ -828,11 +1166,14 @@ export default function (pi: ExtensionAPI) {
   function statusLines(): string[] {
     const registry = getRegistry();
     const lines: string[] = [
-      `watchdog: ${cfg.enabled ? "enabled" : "disabled"} · mode ${cfg.mode} · poll ${cfg.pollIntervalMs / 1000}s · action ${cfg.action} · cooldown ${cfg.cooldownMs / 1000}s`,
+      `watchdog: ${cfg.enabled ? "enabled" : "disabled"} · mode ${cfg.mode} · poll ${cfg.pollIntervalMs / 1000}s · action ${cfg.action}`,
+      `delivery: per-agent cooldown ${cfg.cooldownMs / 1000}s · fleet cooldown ${cfg.globalCooldownMs / 1000}s · batch ${cfg.batchWindowMs / 1000}s · max ${cfg.maxCheckInsPerAgent}/agent · audit ${cfg.auditTrail ? "on" : "off"}`,
+      `capabilities: live turn extension ${canExtendTurns() ? "available" : "unavailable (steer/resume only)"}`,
       `signals: ${Object.entries(cfg.signals)
         .filter(([, v]) => v != null && v > 0)
         .map(([k, v]) => `${k}≥${v}`)
         .join(", ")}`,
+      `modelPolicy: ${cfg.models.configurationError ? `INVALID · ${cfg.models.configurationError}` : cfg.models.required ? `${cfg.models.required} · ${cfg.models.onViolation}` : "off"}`,
       `hardStop: ${cfg.hardStop.enabled ? `tokens≥${cfg.hardStop.tokens ?? "-"} minutes≥${cfg.hardStop.minutes ?? "-"}` : "off"}`,
       `registry: ${registry ? "connected" : "NOT FOUND (pi-subagents inactive?)"}`,
       `watched: ${roster.size}`,
@@ -842,19 +1183,31 @@ export default function (pi: ExtensionAPI) {
       if (rec?.outputFile) updateFromTranscript(w, rec.outputFile);
       const v = rec ? readVitals(w, rec) : undefined;
       const label = rec ? (rec.alias ?? rec.handle ?? id) : id;
-      lines.push(v ? `  ${label}: ${vitalsLine(v)}` : `  ${label}: (no record)`);
+      const model = rec ? modelLine(rec) : undefined;
+      lines.push(v ? `  ${label}${model ? ` [${model}]` : ""}: ${vitalsLine(v)}` : `  ${label}: (no record)`);
     }
     return lines;
   }
 
   const applyConfig = (c: { cwd: string; isProjectTrusted: () => boolean }) => {
     cfg = loadConfig(c.cwd, c.isProjectTrusted());
-    // Poll cadence may have changed — rebuild a live timer on the new interval.
+    if (cfg.models.configurationError) {
+      notify(`watchdog: ${cfg.models.configurationError}`, "error");
+      appendAudit("configuration-error", { message: cfg.models.configurationError });
+    }
+    // Poll and batch cadence may have changed — rebuild live timers.
     if (timer) {
       clearInterval(timer);
       timer = undefined;
       ensureTimer();
     }
+    if (batchTimer) {
+      clearTimeout(batchTimer);
+      batchTimer = undefined;
+    }
+    if (!cfg.enabled) clearPendingCheckIns("watchdog disabled by configuration reload", true);
+    else if (cfg.action !== "wake") clearPendingCheckIns("action changed to notify by configuration reload", true);
+    else scheduleBatchFlush();
   };
 
   const helpText = () =>
@@ -875,10 +1228,14 @@ export default function (pi: ExtensionAPI) {
       `Settings:`,
       `  enabled          true/false master switch`,
       `  mode             "guide" = orchestrator assesses with judgment (default) · "strict" = thresholds are budgets`,
-      `  action           "wake" = check-in message to the orchestrator · "notify" = UI toast only`,
+      `  action           "wake" = batched orchestrator check-in · "notify" = UI toast only`,
       `  deliverAs        "steer" = interrupt after current tool batch · "followUp" = wait until idle`,
       `  pollIntervalMs   vitals poll cadence (min 2000)`,
-      `  cooldownMs       min gap between check-ins per agent (min 5000)`,
+      `  cooldownMs       min gap between breach evaluations per agent (min 5000)`,
+      `  globalCooldownMs min gap between LLM wakes across the fleet (min 5000)`,
+      `  batchWindowMs    collect nearby agent breaches into one wake`,
+      `  maxCheckInsPerAgent maximum automatic LLM wakes per agent (min 1; manual bypasses)`,
+      `  auditTrail       persist full structured records outside LLM context`,
       `  renotifyFactor   re-alert when a signal reaches lastAlerted × factor (min 1.1)`,
       `  signals          thresholds — 0 or null disables one:`,
       `    tokens           lifetime tokens (input+output+cacheWrite)`,
@@ -887,6 +1244,7 @@ export default function (pi: ExtensionAPI) {
       `    turns            assistant turns (transcript-derived)`,
       `    minutes          wall-clock since spawn — the only signal that catches a wedged tool`,
       `    compactions      child auto-compactions (≥1 on a small task is a red flag)`,
+      `  models           { required, onViolation, unknownGraceMs } — exact live-model invariant`,
       `  hardStop         { enabled, tokens, minutes } — automatic abort, outcome reported from the RPC reply`,
       ``,
       `Docs: https://github.com/erikdarlingdata/claude-plugins/tree/main/plugins/pi-subagent-watchdog`,
@@ -984,7 +1342,12 @@ export default function (pi: ExtensionAPI) {
       if (action === undefined) return;
 
       if (action.startsWith("Show")) {
-        const lines = [`${handle} (${w.type}, id ${id})`, `task: ${w.description}`, `vitals: ${vitalsLine(v)}`];
+        const lines = [
+          `${handle} (${w.type}, id ${id})`,
+          `task: ${w.description}`,
+          ...(modelLine(rec) ? [`model: ${modelLine(rec)}`] : []),
+          `vitals: ${vitalsLine(v)}`,
+        ];
         if (w.recentTools.length > 0) {
           lines.push("recent tools:");
           for (const t of w.recentTools) lines.push(`  - ${t}`);
@@ -996,15 +1359,19 @@ export default function (pi: ExtensionAPI) {
       if (action.startsWith("Request check-in")) {
         w.lastWakeAt = Date.now();
         w.wakeCount += 1;
+        const item = snapshotCheckIn(
+          w,
+          rec,
+          v,
+          [],
+          w.wakeCount,
+          "User-requested check-in via /watchdog",
+        );
+        appendAudit("manual-check-in", { checkIn: item });
         pi.sendMessage(
           {
             customType: "subagent-watchdog",
-            content: checkInMessage(w, rec, v, [], {
-              mode: cfg.mode,
-              checkInNumber: w.wakeCount,
-              reason: "User-requested check-in via /watchdog.",
-              advice: adviceLines(w, v, []),
-            }),
+            content: checkInMessage([item], cfg.mode, canExtendTurns()),
             display: true,
           },
           { deliverAs: cfg.deliverAs, triggerTurn: true },
@@ -1019,6 +1386,7 @@ export default function (pi: ExtensionAPI) {
         try {
           if (!rec.session?.steer) throw new Error("no live session to steer");
           await rec.session.steer(msg);
+          appendAudit("manual-steer", { agentId: id, handle, model: modelLine(rec), message: msg });
           c.ui.notify(`Steered "${handle}".`, "info");
         } catch (err) {
           c.ui.notify(`Steer failed: ${err instanceof Error ? err.message : String(err)}`, "error");
@@ -1030,6 +1398,7 @@ export default function (pi: ExtensionAPI) {
         try {
           if (!rec.session?.steer) throw new Error("no live session to steer");
           await rec.session.steer(WRAP_UP_STEER);
+          appendAudit("manual-wrap-up", { agentId: id, handle, model: modelLine(rec) });
           c.ui.notify(`Wrap-up steer sent to "${handle}".`, "info");
         } catch (err) {
           c.ui.notify(`Steer failed: ${err instanceof Error ? err.message : String(err)}`, "error");
