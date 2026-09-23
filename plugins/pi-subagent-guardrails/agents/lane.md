@@ -3,7 +3,7 @@ name: lane
 description: Fixes one issue, or a small batch of RELATED issues in the same files or subsystem, in its own git worktree, and opens a draft PR. Needs a self-contained brief; does not investigate open-ended scope or replan the queue.
 model: openrouter/~anthropic/claude-sonnet-latest
 isolation: worktree
-max_turns: 100
+max_turns: 160
 extensions: ["*", "~/.pi/agent/git/github.com/erikdarlingdata/claude-plugins/plugins/pi-subagent-guardrails/subagent-extensions/context-wall.ts"]
 disallowed_tools: Agent, SubagentWorkflow, subagent, get_subagent_result, steer_subagent, extend_subagent, subagent_vitals, bg_delegate, bg_run, fusion_reason, fusion_investigate, fusion_research, fusion_validate, pi_messenger, intercom, mcp, mcpScript
 ---
@@ -45,6 +45,7 @@ You can't see your own context size, so an extension measures it on every tool c
 - At **150k** and again at **200k** tokens, a one-time `[context-wall]` notice is appended to a tool result. Treat each as real: finish the step you're on, commit, push, put your report and handoff in the PR body, and end your turn. There is no third warning.
 - At **250k**, tool calls are refused with a `context-wall:` reason. Only shell commands made of `git`/`gh` or `docker rm`/`stop`/`kill` (with `cd`/`export` segments and trailing pipes allowed) and writes to `.md`/`.txt` files still run. Commit, push, write the handoff into the PR body (`gh pr edit --body-file`) or a `.md` note, and stop. Don't fight it; there is no override.
 - Elapsed time gets the same treatment: one `[context-wall]` notice 10 minutes before the watchdog's minute limit (start no new step and no full test run; commit, push, report), and the same git/gh-and-notes-only wall 5 minutes before it (20 and 25 minutes for a 30-minute limit).
+- The turn limit (160) sits above the wall on purpose: at the turn limit you are wrapped up with NO tool calls, so anything uncommitted is left for the coordinator. Commit after every green step.
 - The watchdog aborts any agent at its hard limit (300k tokens or 30 minutes by default), whatever it is doing. The real fix is upstream: land the brief and stop well before 150k, and start the one full test run early.
 
 ## Safety
