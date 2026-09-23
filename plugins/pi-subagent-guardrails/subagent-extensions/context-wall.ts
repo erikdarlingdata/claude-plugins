@@ -5,7 +5,8 @@
  * usage audit of one multi-agent orchestration found that 0 of 39 subagents honored them). The subagent watchdog
  * can see the size, but it reports to the PARENT, and each report wakes the parent's whole (often huge) context. This tells the child directly:
  *
- *   - warn1 / warn2: one-time notices appended to a tool result the agent is already reading.
+ *   - nudge (100k): a one-time notice if the agent has not edited any code yet (investigation eating the budget).
+ *   - warn1 / warn2: one-time notices (they lead with "nothing is pushed yet" until a git push / gh pr create) appended to a tool result the agent is already reading.
  *   - wall: every tool call is blocked EXCEPT shell commands made only of git / gh (optionally with cd / export
  *     segments; pipes after them are fine) and write/edit to .md/.txt files. The agent can still commit, push and
  *     write its report, then stop, instead of being aborted with its work and report lost.
@@ -34,7 +35,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const DEFAULTS = { warn1: 150_000, warn2: 200_000, wall: 250_000 };
+const DEFAULTS = { nudge: 100_000, warn1: 150_000, warn2: 200_000, wall: 250_000 };
 type Limits = typeof DEFAULTS & { warnMinutes: number | null; wallMinutes: number | null };
 
 const positive = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
@@ -69,6 +70,7 @@ export function readLimits(): Limits {
     const raw = readJson(join(dir, "context-wall.json"));
     const pick = (key: keyof typeof DEFAULTS) => positive(raw?.[key]) ?? DEFAULTS[key];
     return {
+      nudge: pick("nudge"),
       warn1: pick("warn1"),
       warn2: pick("warn2"),
       wall: pick("wall"),
@@ -111,6 +113,9 @@ export const clock = { now: () => Date.now() };
 export default function contextWall(pi: ExtensionAPI) {
   let warned = 0; // highest warning already sent: 0, 1 or 2
   let timeWarned = false;
+  let codeEdited = false; // a write/edit to anything but .md/.txt has been attempted
+  let pushed = false; // a `git push` or `gh pr create` has been attempted
+  let nudged = false;
   const startedAt = clock.now();
   const elapsedMinutes = () => (clock.now() - startedAt) / 60_000;
 
@@ -148,6 +153,13 @@ export default function contextWall(pi: ExtensionAPI) {
 
   pi.on("tool_call", (event, ctx) => {
     try {
+      const args = (event.input ?? {}) as Record<string, unknown>;
+      if ((event.toolName === "write" || event.toolName === "edit") && !/\.(md|txt)$/i.test(String(args.path ?? ""))) {
+        codeEdited = true;
+      }
+      if (event.toolName === "bash" && /\bgit\s+push\b|\bgh\s+pr\s+create\b/.test(String(args.command ?? ""))) {
+        pushed = true;
+      }
       const limits = readLimits();
       const m = measure(ctx);
       const sizeHit = m != null && m.judged >= limits.wall;
@@ -188,13 +200,23 @@ export default function contextWall(pi: ExtensionAPI) {
       const m = measure(ctx);
       if (m == null) return undefined;
       const level = m.judged >= limits.warn2 ? 2 : m.judged >= limits.warn1 ? 1 : 0;
+      if (level === 0 && !nudged && !codeEdited && m.judged >= limits.nudge) {
+        nudged = true;
+        const text =
+          `\n\n[context-wall] You are at ${fmtK(m.judged)} and have not edited any code yet. Stop investigating. ` +
+          `Make the smallest change that meets your brief now, push it as a draft PR, and put open questions in the ` +
+          `PR body. The handoff line is ${fmtK(limits.warn1)}.`;
+        return { content: [...(event.content ?? []), { type: "text" as const, text }] };
+      }
       if (level <= warned) return undefined;
       warned = level;
+      const unpushed = pushed ? "" : "Nothing is pushed yet: commit and push a draft PR before any other step. ";
       const lead =
-        level === 1
+        unpushed +
+        (level === 1
           ? `You are past the ~${fmtK(limits.warn1)} handoff line. Finish the step you are on, then commit, push, ` +
             `put your report in the PR body, and end your turn.`
-          : `This is the last warning before the wall. Wrap up now.`;
+          : `This is the last warning before the wall. Wrap up now.`);
       const text =
         `\n\n[context-wall] You are at ${fmtK(m.judged)} (${describe(m)}; warning ${level} of 2). ${lead} ` +
         `At ${fmtK(limits.wall)}, every tool except git/gh commands and .md/.txt writes is blocked.`;

@@ -27,8 +27,9 @@ The wall talks to the child instead:
 
 | Judged size | What happens |
 |---|---|
+| 100k (`nudge`) | Only if the agent has not edited any code yet (write/edit to anything but `.md`/`.txt`): a one-time notice to stop investigating, make the smallest change that meets the brief, and push a draft PR. Added after two lanes spent their whole budget reading and shipped nothing. |
 | 150k (`warn1`) | A one-time `[context-wall]` notice is appended to the tool result the agent is already reading: finish the step, commit, push, report, stop. |
-| 200k (`warn2`) | One last notice. |
+| 200k (`warn2`) | One last notice. Until the agent has run a `git push` or `gh pr create`, both notices lead with "nothing is pushed yet: push a draft PR first." |
 | 250k (`wall`) | Every tool call is refused **except** shell commands made of `git`/`gh` (with `cd`/`export` segments and trailing pipes allowed) and writes to `.md`/`.txt` files. The agent can still commit, push and write its report; it just can't keep working. |
 
 The **judged size** is the larger of live context (`ctx.getContextUsage()`) and total token use (input + output +
@@ -61,7 +62,7 @@ Add the line to each agent file in `~/.pi/agent/agents/` whose children should b
 reviewer, and so on). `agents/lane.md` already has it.
 
 Thresholds live in `~/.pi/agent/context-wall.json` (copy [`context-wall.example.json`](context-wall.example.json)).
-The file is read on every call, so no reload is needed. A missing file or bad values fall back to 150k / 200k / 250k.
+The file is read on every call, so no reload is needed. A missing file or bad values fall back to 100k / 150k / 200k / 250k.
 
 **Smoke test:** set `{"warn1": 1, "warn2": 900000000, "wall": 2}`, spawn a cheap subagent that runs `ls` and then
 `git --version`, and check that `ls` is refused with a `context-wall:` reason while `git` runs and carries the
