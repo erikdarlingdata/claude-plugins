@@ -138,11 +138,29 @@ restart either way.
   `/watchdog status` and copy its exact model string into the config. This is
   still defense-in-depth: primary coercion belongs in pi-subagents before launch,
   and workflow/nested children remain invisible to the watchdog.
+- `models.allowed` — optional allowlist of exact `provider/model-id`s, for
+  per-task model choice (e.g. `["openrouter/~anthropic/claude-opus-latest",
+  "openrouter/~anthropic/claude-sonnet-latest"]`). An effective model outside
+  the list is a violation, handled exactly like a `required` mismatch. When
+  present it supersedes `required`; when absent, a valid `required` acts as a
+  one-entry allowlist. A present-but-invalid list (not an array, empty, or a
+  bare name in it) is a configuration error that leaves enforcement OFF and says
+  so loudly. It never silently falls back to `required`, so a typo can't widen
+  the policy. Put the per-role model in each agent file's `model:` so children
+  launch on an allowed model in the first place; the watchdog is the backstop.
 - `hardStop` — opt-in automatic abort. Unlike a steer (which queues behind a
   running tool call), the stop interrupts a wedged tool mid-execution. The
   outcome is reported to the orchestrator **from the RPC reply**: a failed or
   unanswered stop says so explicitly (agent still running, do not respawn) and
   re-arms for retry.
+
+### Pairing with the context wall
+
+The watchdog reports to the **parent**, and every check-in re-reads the parent's whole context. For budget-conscious
+setups, pair it with the subagent-side context wall in
+[`pi-subagent-guardrails`](../pi-subagent-guardrails/README.md): the wall warns the child itself at 150k and 200k and
+walls it at 250k, and the watchdog keeps only the parent-facing trigger at the wall plus the hard stop. That README
+has the recommended config, with the turn, tool-use and minute triggers off.
 
 ## Surfaces
 

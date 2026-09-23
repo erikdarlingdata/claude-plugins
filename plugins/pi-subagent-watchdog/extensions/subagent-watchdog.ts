@@ -83,6 +83,11 @@ interface WatchdogConfig {
   models: {
     /** Exact effective provider/model id required for every watched top-level agent. */
     required?: string | null;
+    /**
+     * Allowlist of exact effective provider/model ids (per-task model choice). When set it supersedes
+     * `required`; when absent, a valid `required` becomes a one-entry allowlist. null = policy off.
+     */
+    allowed?: string[] | null;
     /** A mismatch is either UI/audit-only or immediately stopped. */
     onViolation: "hard-stop" | "notify";
     /** Let the session populate its live model before treating unknown as a violation. */
@@ -119,6 +124,7 @@ const DEFAULTS: WatchdogConfig = {
   },
   models: {
     required: null,
+    allowed: null,
     onViolation: "notify",
     unknownGraceMs: 30_000,
   },
@@ -177,10 +183,36 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
   const requiredModelInput = typeof m.models.required === "string" ? m.models.required.trim() : "";
   const modelSlash = requiredModelInput.indexOf("/");
   const hasProviderAndModel = modelSlash > 0 && modelSlash < requiredModelInput.length - 1;
-  const modelConfigurationError = requiredModelInput && !hasProviderAndModel
+  const isModelId = (s: string) => {
+    const slash = s.indexOf("/");
+    return slash > 0 && slash < s.length - 1;
+  };
+  const requiredError = requiredModelInput && !hasProviderAndModel
     ? `models.required must be an exact provider/model id with non-empty segments; got "${requiredModelInput}". ` +
       `Run /watchdog status and copy the effective model string.`
     : undefined;
+  // models.allowed: an array of exact ids. Present-but-invalid is a configuration error (enforcement off,
+  // surfaced loudly) rather than a silent fallback to `required`, so a typo can't quietly widen the policy.
+  const allowedRaw = m.models.allowed;
+  const allowedPresent = allowedRaw !== undefined && allowedRaw !== null;
+  const allowedList = Array.isArray(allowedRaw)
+    ? allowedRaw.map((x) => (typeof x === "string" ? x.trim() : ""))
+    : [];
+  const allowedError = allowedPresent
+    ? !Array.isArray(allowedRaw) || allowedList.length === 0
+      ? `models.allowed must be a non-empty array of exact provider/model ids.`
+      : allowedList.some((x) => !isModelId(x))
+        ? `models.allowed entries must be exact provider/model ids with non-empty segments; got ${JSON.stringify(allowedRaw)}.`
+        : undefined
+    : undefined;
+  const modelConfigurationError = allowedError ?? (allowedPresent ? undefined : requiredError);
+  const effectiveAllowed: string[] | null = modelConfigurationError
+    ? null
+    : allowedPresent
+      ? [...new Set(allowedList)]
+      : requiredModelInput
+        ? [requiredModelInput]
+        : null;
   return {
     enabled: enabledRaw !== false && enabledRaw !== "false" && enabledRaw !== 0,
     pollIntervalMs: num(m.pollIntervalMs, DEFAULTS.pollIntervalMs, 2_000),
@@ -203,6 +235,7 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
     },
     models: {
       required: modelConfigurationError || !requiredModelInput ? null : requiredModelInput,
+      allowed: effectiveAllowed,
       onViolation: m.models.onViolation === "hard-stop" ? "hard-stop" : "notify",
       unknownGraceMs: num(m.models.unknownGraceMs, DEFAULTS.models.unknownGraceMs, 5_000),
       configurationError: modelConfigurationError,
@@ -969,18 +1002,19 @@ export default function (pi: ExtensionAPI) {
       // Model policy is a post-spawn invariant, not the primary gate: the
       // manager should force the model before launch, while this catches a
       // bypass/regression and leaves a durable record of the effective id.
-      const requiredModel = cfg.models.required;
+      const allowedModels = cfg.models.allowed;
+      const requiredModel = allowedModels ? allowedModels.join(" | ") : null;
       const effectiveModel = effectiveModelId(rec);
       const unknownElapsedMs = Date.now() - (w.firstRunningAt ?? Date.now());
       const unknownExpired = !effectiveModel && unknownElapsedMs >= cfg.models.unknownGraceMs;
-      const modelViolationReason = requiredModel && !w.modelViolationHandled
-        ? effectiveModel && effectiveModel !== requiredModel
-          ? `effective model ${effectiveModel} != required ${requiredModel}`
+      const modelViolationReason = allowedModels && !w.modelViolationHandled
+        ? effectiveModel && !allowedModels.includes(effectiveModel)
+          ? `effective model ${effectiveModel} is not in the allowed set [${requiredModel}]`
           : unknownExpired
-            ? `effective model remained unknown for ${cfg.models.unknownGraceMs / 1000}s; required ${requiredModel}`
+            ? `effective model remained unknown for ${cfg.models.unknownGraceMs / 1000}s; allowed [${requiredModel}]`
             : undefined
         : undefined;
-      if (requiredModel && modelViolationReason) {
+      if (allowedModels && modelViolationReason) {
         w.modelViolationHandled = true;
         const handle = rec.alias ?? rec.handle ?? w.id;
         const reason = modelViolationReason;
@@ -991,6 +1025,7 @@ export default function (pi: ExtensionAPI) {
           description: w.description,
           effectiveModel: effectiveModel ?? null,
           requiredModel,
+          allowedModels,
           action: cfg.models.onViolation,
           vitals: v,
         });
@@ -1173,7 +1208,7 @@ export default function (pi: ExtensionAPI) {
         .filter(([, v]) => v != null && v > 0)
         .map(([k, v]) => `${k}≥${v}`)
         .join(", ")}`,
-      `modelPolicy: ${cfg.models.configurationError ? `INVALID · ${cfg.models.configurationError}` : cfg.models.required ? `${cfg.models.required} · ${cfg.models.onViolation}` : "off"}`,
+      `modelPolicy: ${cfg.models.configurationError ? `INVALID · ${cfg.models.configurationError}` : cfg.models.allowed ? `${cfg.models.allowed.join(" | ")} · ${cfg.models.onViolation}` : "off"}`,
       `hardStop: ${cfg.hardStop.enabled ? `tokens≥${cfg.hardStop.tokens ?? "-"} minutes≥${cfg.hardStop.minutes ?? "-"}` : "off"}`,
       `registry: ${registry ? "connected" : "NOT FOUND (pi-subagents inactive?)"}`,
       `watched: ${roster.size}`,
