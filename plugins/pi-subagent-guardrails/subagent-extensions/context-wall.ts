@@ -20,6 +20,12 @@
  * reload needed; missing or bad values fall back to these defaults). The watchdog's hard stop at 300k tokens or
  * 30 min remains the backstop above the wall.
  *
+ * Wall clock: the watchdog's minute hard stop gives the child no warning, so a lane killed mid-test-run loses its
+ * push and its report. The wall applies the same notice-then-wall to elapsed time: `warnMinutes` and `wallMinutes`
+ * in context-wall.json, or, when those are absent, 10 and 5 minutes before the watchdog's own `hardStop.minutes`
+ * (~/.pi/agent/subagent-watchdog.json, when the hard stop is enabled). No minute limit anywhere = no time wall.
+ * The clock starts when this extension loads in the child, a few seconds after the watchdog's clock.
+ *
  * Fails open: any error is a no-op, so a bug here can never block or spam an agent. This is a budget wall, not a
  * security sandbox (a `$(...)` inside a git command still runs).
  */
@@ -29,19 +35,47 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DEFAULTS = { warn1: 150_000, warn2: 200_000, wall: 250_000 };
-type Limits = typeof DEFAULTS;
+type Limits = typeof DEFAULTS & { warnMinutes: number | null; wallMinutes: number | null };
+
+const positive = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
+const readJson = (path: string): Record<string, unknown> | null => {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+/** Minute limits: explicit context-wall.json values win; else 10/5 minutes before the watchdog's hard stop. */
+export function minuteLimits(
+  wallCfg: Record<string, unknown> | null,
+  watchdogCfg: Record<string, unknown> | null,
+): { warnMinutes: number | null; wallMinutes: number | null } {
+  let warnMinutes = positive(wallCfg?.warnMinutes);
+  let wallMinutes = positive(wallCfg?.wallMinutes);
+  const hs = watchdogCfg?.hardStop as Record<string, unknown> | undefined;
+  const hardMinutes = hs?.enabled === true ? positive(hs.minutes) : null;
+  if (hardMinutes != null) {
+    wallMinutes ??= Math.max(1, hardMinutes - 5);
+    warnMinutes ??= Math.max(0.5, hardMinutes - 10);
+  }
+  if (warnMinutes != null && wallMinutes != null && warnMinutes >= wallMinutes) warnMinutes = null;
+  return { warnMinutes, wallMinutes };
+}
 
 export function readLimits(): Limits {
   try {
     const dir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-    const raw = JSON.parse(readFileSync(join(dir, "context-wall.json"), "utf8")) as Record<string, unknown>;
-    const pick = (key: keyof Limits) => {
-      const v = raw?.[key];
-      return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : DEFAULTS[key];
+    const raw = readJson(join(dir, "context-wall.json"));
+    const pick = (key: keyof typeof DEFAULTS) => positive(raw?.[key]) ?? DEFAULTS[key];
+    return {
+      warn1: pick("warn1"),
+      warn2: pick("warn2"),
+      wall: pick("wall"),
+      ...minuteLimits(raw, readJson(join(dir, "subagent-watchdog.json"))),
     };
-    return { warn1: pick("warn1"), warn2: pick("warn2"), wall: pick("wall") };
   } catch {
-    return DEFAULTS;
+    return { ...DEFAULTS, warnMinutes: null, wallMinutes: null };
   }
 }
 
@@ -71,8 +105,14 @@ export function wrapUpAllowed(toolName: string, input: unknown): boolean {
   return false;
 }
 
+/** Test seam: the clock the time wall reads. */
+export const clock = { now: () => Date.now() };
+
 export default function contextWall(pi: ExtensionAPI) {
   let warned = 0; // highest warning already sent: 0, 1 or 2
+  let timeWarned = false;
+  const startedAt = clock.now();
+  const elapsedMinutes = () => (clock.now() - startedAt) / 60_000;
 
   /**
    * The judged size is the LARGER of the live context and the session's total token use, summed the way the
@@ -108,15 +148,21 @@ export default function contextWall(pi: ExtensionAPI) {
 
   pi.on("tool_call", (event, ctx) => {
     try {
-      const m = measure(ctx);
-      if (m == null) return undefined;
       const limits = readLimits();
-      if (m.judged < limits.wall) return undefined;
+      const m = measure(ctx);
+      const sizeHit = m != null && m.judged >= limits.wall;
+      const mins = elapsedMinutes();
+      const timeHit = limits.wallMinutes != null && mins >= limits.wallMinutes;
+      if (!sizeHit && !timeHit) return undefined;
       if (wrapUpAllowed(event.toolName, event.input)) return undefined;
+      const why = sizeHit
+        ? `you are past the ${fmtK(limits.wall)} wall (${describe(m!)})`
+        : `you have run ${Math.floor(mins)} minutes, past the ${limits.wallMinutes}-minute wall; the watchdog stops ` +
+          `you in a few minutes`;
       return {
         block: true,
         reason:
-          `context-wall: you are past the ${fmtK(limits.wall)} wall (${describe(m)}). Only git/gh commands ` +
+          `context-wall: ${why}. Only git/gh commands ` +
           `and writes to .md/.txt files run now. Commit and push what you have, put your report in the PR body ` +
           `(gh pr edit --body-file) or a .md note, then end your turn with a final message of 400 words or fewer. ` +
           `This is not a bug, and there is no override.`,
@@ -128,9 +174,19 @@ export default function contextWall(pi: ExtensionAPI) {
 
   pi.on("tool_result", (event, ctx) => {
     try {
+      const limits = readLimits();
+      const mins = elapsedMinutes();
+      if (!timeWarned && limits.warnMinutes != null && mins >= limits.warnMinutes) {
+        timeWarned = true;
+        const wallAt = limits.wallMinutes != null ? ` At ${limits.wallMinutes} minutes, every tool except git/gh ` +
+          `commands and .md/.txt writes is blocked.` : "";
+        const text =
+          `\n\n[context-wall] You have run ${Math.floor(mins)} minute${Math.floor(mins) === 1 ? "" : "s"}. Start no new step and no full test run. ` +
+          `Commit, push, put your report in the PR body, and end your turn.${wallAt}`;
+        return { content: [...(event.content ?? []), { type: "text" as const, text }] };
+      }
       const m = measure(ctx);
       if (m == null) return undefined;
-      const limits = readLimits();
       const level = m.judged >= limits.warn2 ? 2 : m.judged >= limits.warn1 ? 1 : 0;
       if (level <= warned) return undefined;
       warned = level;
