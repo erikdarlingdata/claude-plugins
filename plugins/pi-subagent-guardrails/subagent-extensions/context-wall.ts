@@ -7,7 +7,7 @@
  *
  *   - nudge (100k): a one-time notice if the agent has not edited any code yet (investigation eating the budget).
  *   - warn1 / warn2: one-time notices (they lead with "nothing is pushed yet" until a git push / gh pr create) appended to a tool result the agent is already reading.
- *   - wall: every tool call is blocked EXCEPT shell commands made only of git / gh (optionally with cd / export
+ *   - wall: every tool call is blocked EXCEPT shell commands made only of git / gh / docker rm|stop|kill (optionally with cd / export
  *     segments; pipes after them are fine) and write/edit to .md/.txt files. The agent can still commit, push and
  *     write its report, then stop, instead of being aborted with its work and report lost.
  *
@@ -94,10 +94,13 @@ export function wrapUpAllowed(toolName: string, input: unknown): boolean {
       .map((s) => s.split("|")[0].trim())
       .filter(Boolean);
     const isGit = (s: string) => /^(git|gh)(\s|$)/.test(s);
+    // Cleanup of a container the agent started (docker rm/stop/kill) is allowed too: a lane walled mid-task
+    // otherwise leaves its test database running.
+    const isCleanup = (s: string) => /^docker\s+(container\s+)?(rm|stop|kill)(\s|$)/.test(s);
     return (
       segments.length > 0 &&
-      segments.every((s) => isGit(s) || /^(cd|export)(\s|$)/.test(s)) &&
-      segments.some(isGit)
+      segments.every((s) => isGit(s) || isCleanup(s) || /^(cd|export)(\s|$)/.test(s)) &&
+      segments.some((s) => isGit(s) || isCleanup(s))
     );
   }
   if (toolName === "write" || toolName === "edit") {
