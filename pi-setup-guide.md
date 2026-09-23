@@ -562,7 +562,24 @@ Optional `models.required` enforces an exact effective `provider/model-id` for
 watched top-level agents. Identity comes from the live child session across all
 spawn paths, with startup metadata only as fallback. Mismatches default to
 `notify`; `hard-stop` is opt-in. `/watchdog status` prints the exact copyable
-model string and active capabilities.
+model string and active capabilities. For per-task model choice, use
+`models.allowed` (a list of exact ids that supersedes `required`) and put each
+role's tier in its agent file's `model:`.
+
+Budget guardrails: the watchdog wakes the **parent**, and each wake re-reads
+the parent's whole context. `pi-subagent-guardrails` (same package) adds the
+child-side half:
+
+- **A context wall.** It warns the child itself at 150k and 200k, then refuses
+  everything but git/gh and `.md`/`.txt` writes at 250k, so the agent commits
+  and reports before the hard stop.
+- **A `lane` agent** for code-editing lanes.
+- **Written rules** for fan-out, model tiers, context and ranking.
+
+The wall is deliberately not auto-loaded; subagents opt in through their agent
+file's `extensions:` line. With it in place, turn the watchdog's `turns`,
+`toolUses` and `minutes` triggers off. Setup and the recommended JSON:
+<https://github.com/erikdarlingdata/claude-plugins/tree/main/plugins/pi-subagent-guardrails>
 
 Surfaces:
 

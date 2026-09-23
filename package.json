@@ -1,7 +1,7 @@
 {
   "name": "darling-data-plugins",
-  "version": "1.2.1",
-  "description": "Darling Data plugins for pi, Claude Code, and Copilot CLI: SQL Server query plan analysis, a pi session auto-resume extension, and a pi subagent watchdog",
+  "version": "1.3.0",
+  "description": "Darling Data plugins for pi, Claude Code, and Copilot CLI: SQL Server query plan analysis, a pi session auto-resume extension, a pi subagent watchdog, and subagent token-budget guardrails",
   "license": "MIT",
   "author": "Erik Darling (https://erikdarling.com)",
   "repository": {
@@ -18,7 +18,8 @@
     "skills",
     "session-resume",
     "subagents",
-    "watchdog"
+    "watchdog",
+    "guardrails"
   ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
