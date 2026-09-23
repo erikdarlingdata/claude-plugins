@@ -138,6 +138,22 @@ for signals, modes, and design notes. Requires the
 [pi-subagents](https://github.com/tintinweb/pi-subagents) extension; pi-only
 for the same reason as above.
 
+### `pi-subagent-guardrails` (pi only)
+
+Token-budget guardrails for multi-agent setups, built after an overnight orchestration burned through its usage limit
+(95% of the spend came at more than 150k context). It has three pieces:
+
+- [`guardrails.md`](plugins/pi-subagent-guardrails/guardrails.md): the written rules for fan-out caps, model tiers,
+  context discipline, session length and ranking.
+- **A context-wall extension**, loaded only into subagents through their agent files. It tells the child its own
+  size at 150k and 200k. At 250k it refuses everything but git/gh and markdown writes, so the agent commits and
+  reports instead of being aborted with its work lost.
+- **A `lane` agent type** for code-editing lanes: Sonnet, its own worktree, draft PRs, no fan-out tools.
+
+The wall is deliberately **not** auto-loaded, because it would wall off your interactive session too. See
+[`plugins/pi-subagent-guardrails/README.md`](plugins/pi-subagent-guardrails/README.md) for install and the
+recommended watchdog and pi-subagents settings.
+
 ## Not a plugin: the pi setup guide
 
 [`pi-setup-guide.md`](pi-setup-guide.md) — a distilled ~15-minute setup for

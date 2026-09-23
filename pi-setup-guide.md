@@ -1197,6 +1197,47 @@ copying it — an invalid value disables enforcement loudly instead of flagging
 every agent. This is defense-in-depth: forcing the model before launch belongs
 in pi-subagents.
 
+For per-task model choice, use `models.allowed` instead: a list of exact ids
+(say Opus for design and security review, Sonnet as the default, a cheap model
+for lookups) that supersedes `required`. Put each role's tier in its agent
+file's `model:` so children launch on an allowed model, and the watchdog
+hard-stops anything else. A malformed list turns enforcement off with a loud
+error rather than silently widening the policy.
+
+### Budget guardrails: the context wall and the `lane` agent
+
+The watchdog talks to the **parent**, and each check-in re-reads the parent's
+whole context. The child, meanwhile, can't see its own size, so "hand off at
+150k" in a prompt is honor system. In one audit, 0 of 39 subagents honored it.
+The `pi-subagent-guardrails` plugin (same package) closes that gap from the
+child's side:
+
+- **Context wall** (`subagent-extensions/context-wall.ts`). It warns the child
+  itself at 150k and 200k. At 250k it refuses every tool but git/gh commands
+  and `.md`/`.txt` writes, so the agent commits and reports instead of being
+  hard-stopped with its work lost. It judges the larger of live context and
+  total token use, the watchdog's own hard-stop measure, so it always fires
+  first.
+- **It is NOT auto-loaded**, on purpose: in your interactive session it would
+  wall *you*. Subagents opt in through their agent file:
+
+  ```yaml
+  extensions: ["*", "~/.pi/agent/git/github.com/erikdarlingdata/claude-plugins/plugins/pi-subagent-guardrails/subagent-extensions/context-wall.ts"]
+  ```
+
+- **`lane` agent** (`agents/lane.md`, copy it to `~/.pi/agent/agents/`). It's
+  for code-editing lanes: Sonnet, `isolation: worktree`, draft PRs only, the
+  token rules built in, and no fan-out or MCP tools.
+- **`guardrails.md`**: the written rules to point your agents at from
+  `AGENTS.md`. They cover fan-out caps, model tiers, first-prompt discipline,
+  session length and ranking.
+
+With the wall in place, turn the watchdog's activity triggers (`turns`,
+`toolUses`, `minutes`) off and keep only the parent-facing trigger at the wall
+plus the hard stop. On normal lanes those triggers woke the parent within
+minutes. The recommended JSON is in
+[`plugins/pi-subagent-guardrails/README.md`](plugins/pi-subagent-guardrails/README.md).
+
 ### Surfaces
 
 | | |
