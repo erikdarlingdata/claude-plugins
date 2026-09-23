@@ -36,6 +36,13 @@ cache writes summed over the session's assistant messages, the same measure the 
 uses). Total use outruns context by 1.1–1.5×, so judging context alone would let the watchdog abort the agent,
 losing its uncommitted work and its report, before the wall ever fired.
 
+**Elapsed time gets the same treatment.** The watchdog's `hardStop.minutes` kills a child with no warning, so a lane
+stopped in the middle of a full test run loses its push and its report. The wall sends one notice at `warnMinutes`
+("start no new step and no full test run; commit, push, report") and applies the same git/gh-and-notes-only wall at
+`wallMinutes`. When `context-wall.json` doesn't set them, they default to 10 and 5 minutes before the watchdog's
+`hardStop.minutes` (read from `~/.pi/agent/subagent-watchdog.json`, only when its hard stop is enabled): 20 and 25
+for a 30-minute stop. With no minute limit anywhere, there is no time wall.
+
 It fails open: any error is a no-op, so a bug can't block or spam an agent. It's a budget wall, not a security
 sandbox (a `$(...)` inside a git command still runs).
 
