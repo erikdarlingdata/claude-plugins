@@ -138,6 +138,16 @@ restart either way.
   `/watchdog status` and copy its exact model string into the config. This is
   still defense-in-depth: primary coercion belongs in pi-subagents before launch,
   and workflow/nested children remain invisible to the watchdog.
+- `models.allowed` — optional allowlist of exact `provider/model-id`s, for
+  per-task model choice (e.g. `["openrouter/~anthropic/claude-opus-latest",
+  "openrouter/~anthropic/claude-sonnet-latest"]`). An effective model outside
+  the list is a violation, handled exactly like a `required` mismatch. When
+  present it supersedes `required`; when absent, a valid `required` acts as a
+  one-entry allowlist. A present-but-invalid list (not an array, empty, or a
+  bare name in it) is a configuration error that leaves enforcement OFF and says
+  so loudly. It never silently falls back to `required`, so a typo can't widen
+  the policy. Pair it with pi-subagents' `subagentModelPolicy`, which refuses
+  off-list models before launch.
 - `hardStop` — opt-in automatic abort. Unlike a steer (which queues behind a
   running tool call), the stop interrupts a wedged tool mid-execution. The
   outcome is reported to the orchestrator **from the RPC reply**: a failed or
