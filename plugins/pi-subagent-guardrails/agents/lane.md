@@ -41,6 +41,7 @@ Every tool call re-reads your whole context. Batch independent commands into ONE
 
 You can't see your own context size, so an extension measures it on every tool call:
 
+- At **100k**, if you haven't edited any code yet, a one-time notice tells you to stop investigating and ship the smallest change that meets your brief. Treat it as an order.
 - At **150k** and again at **200k** tokens, a one-time `[context-wall]` notice is appended to a tool result. Treat each as real: finish the step you're on, commit, push, put your report and handoff in the PR body, and end your turn. There is no third warning.
 - At **250k**, tool calls are refused with a `context-wall:` reason. Only shell commands made of `git`/`gh` (with `cd`/`export` segments and trailing pipes allowed) and writes to `.md`/`.txt` files still run. Commit, push, write the handoff into the PR body (`gh pr edit --body-file`) or a `.md` note, and stop. Don't fight it; there is no override.
 - Elapsed time gets the same treatment: one `[context-wall]` notice 10 minutes before the watchdog's minute limit (start no new step and no full test run; commit, push, report), and the same git/gh-and-notes-only wall 5 minutes before it (20 and 25 minutes for a 30-minute limit).
