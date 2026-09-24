@@ -12,6 +12,7 @@ This plugin has three pieces. They work without each other, but they're designed
 |---|---|
 | [`guardrails.md`](guardrails.md) | The written rules: fan-out caps, model tiers, context discipline, session length, ranking, and which rules a mechanism enforces. Point your agents at it from `AGENTS.md`. |
 | [`subagent-extensions/context-wall.ts`](subagent-extensions/context-wall.ts) | A subagent-only extension that tells the CHILD its own size and walls it off before the watchdog's hard stop. |
+| [`tools/agent-report.ts`](tools/agent-report.ts) | A zero-dependency analyzer that reads subagent transcripts and reports, per agent, where the tokens and dollars went and which dispatch rules were broken. |
 | [`agents/lane.md`](agents/lane.md) | A pi-subagents agent type for code-editing lanes: Sonnet, its own worktree, draft PRs, the dispatch rules built in, the context wall loaded, and no fan-out tools. |
 
 Requires [pi-subagents](https://github.com/tintinweb/pi-subagents). The wall's hard-stop backstop is
@@ -81,6 +82,35 @@ Copy [`agents/lane.md`](agents/lane.md) to `~/.pi/agent/agents/lane.md` and disp
 - **No fan-out:** `disallowed_tools` removes spawning, workflow, fusion, background, messaging and MCP tools, so a
   lane can't fan out or reach production on its own. Add your own production-facing tools to that list. Unknown
   names are harmless.
+
+## Measuring agents: agent-report
+
+`tools/agent-report.ts` reads the transcripts pi-subagents writes (`$TMPDIR/pi-subagents-<uid>/<cwd>/<parent-session-id>/tasks/<agent-id>.output`) and pi session files, and reports for each agent:
+
+- **Turns, tool calls, follow-ups, minutes.**
+- **Context:** the first turn (the fixed overhead of the system prompt, tool schemas and brief), the mean per turn, the peak, and the lifetime total the watchdog's hard stop measures.
+- **Cost split** (input, output, cache read, cache write) from the provider's own usage records, plus the reasoning share of output tokens.
+- **The largest tool results**, with the call that produced each.
+- **Build, test (full and targeted), commit, push, PR and docker counts.**
+- **Milestones:** first code edit, first commit, first push, crossing 100k/150k/200k/250k, and every context-wall notice or block.
+- **Rule violations** against the dispatch lines in `guardrails.md`:
+  - `test-output-uncapped` and `output-uncapped`;
+  - `read-unbounded`;
+  - `full-suite-repeated`;
+  - `past-handoff-unpushed` and `unpushed-at-end`;
+  - `final-message-long` and `waits-on-notification`;
+  - `edit-outside-worktree` and `forbidden-path`;
+  - `destructive-git` and `kill-by-name`.
+
+With `--session <parent session .jsonl>` it also reads each agent's type, description and status, and the watchdog's audit entries, and finds that session's task directory by itself.
+
+```sh
+node --experimental-strip-types tools/agent-report.ts --session ~/.pi/agent/sessions/<dir>/<stamp>_<id>.jsonl --since 2026-01-01T00:00:00Z
+node --experimental-strip-types tools/agent-report.ts --json <task-dir-or-files>   # machine-readable
+tools/agent-report.ts --agent <id-prefix> --top 10 --forbid-path 'global\.json$' <files>
+```
+
+Use it after every wave. Put the numbers that justify a change to a brief, an agent file or a threshold in the wave's handoff, and name the number that should move when the change works.
 
 ## Recommended companion settings
 

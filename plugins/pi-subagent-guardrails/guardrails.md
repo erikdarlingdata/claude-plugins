@@ -172,6 +172,10 @@ at or below these rules. The pi settings below are the recommended ones; the plu
 - **pi `lane` agent** (`agents/lane.md` in this plugin, copied to `~/.pi/agent/agents/`): Sonnet,
   `isolation: worktree`, draft PRs, and the dispatch lines baked in. Fan-out, cross-session and MCP tools are
   disallowed; add your own production tools to its `disallowed_tools`. Use it for code-editing lanes.
+- **Measure every wave:** `agent-report --session <parent session .jsonl>`. It is `tools/agent-report.ts` in the
+  pi-subagent-guardrails package. It reports per agent: turns, base/mean/peak context, the cost split, the largest tool
+  results, build/test/push counts, milestones, and violations of the dispatch lines. A proposed change to a brief, an
+  agent file or a threshold names the agent-report number it should move, and the next wave's report checks it.
 - **Claude Code has no watchdog.** Every rule here is honor system there.
 
 **Honor system everywhere:** the machine-wide 5-process cap, follow-up discipline, seat session length, the
