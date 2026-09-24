@@ -122,7 +122,8 @@ function analyze(file: string) {
   let turn = 0, peak = 0, peakTurn = 0, lifetime = 0, baseContext = 0, contextSum = 0, finalText = "", models = new Set<string>();
   const judgedAt: number[] = []; const ms: Record<string, Milestone | undefined> = {};
   const mark = (name: string, t: number) => { ms[name] ??= { turn, minute: minute(t), judged: judgedAt[turn - 1] ?? 0 }; };
-  const wallNotices: Milestone[] = []; let wallBlocks = 0, userMsgs = 0;
+  const wallNotices: Milestone[] = []; let wallBlocks = 0, userMsgs = 0, prevT = NaN;
+  const cacheMisses: { turn: number; tokens: number; gapSeconds: number }[] = [];
 
   for (const m of msgs) {
     if (m.role === "user") { userMsgs++; continue; }
@@ -134,6 +135,10 @@ function analyze(file: string) {
       const ctx = Number(u.input ?? 0) + Number(u.cacheRead ?? 0) + Number(u.cacheWrite ?? 0);
       lifetime += Number(u.input ?? 0) + Number(u.output ?? 0) + Number(u.cacheWrite ?? 0);
       if (turn === 1) baseContext = ctx;
+      /* A cache miss after the first turn re-writes the whole context as cache write: real spend, and a jump of a full
+         context in the lifetime measure the wall and the hard stop judge. Seen 8 s after the previous turn, so not only idle expiry. */
+      if (turn > 1 && Number(u.cacheWrite ?? 0) > 30_000 && Number(u.cacheWrite ?? 0) > Number(u.cacheRead ?? 0)) cacheMisses.push({ turn, tokens: Number(u.cacheWrite), gapSeconds: Math.round((m._t - prevT) / 1000) });
+      prevT = m._t;
       contextSum += ctx;
       if (ctx > peak) { peak = ctx; peakTurn = turn; }
       const judged = Math.max(ctx, lifetime); judgedAt.push(judged);
@@ -225,7 +230,7 @@ function analyze(file: string) {
     status: rec.status ?? null, models: [...models], thinking: thinking ?? null, startedAt: new Date(t0).toISOString(), minutes: minute(msgs[msgs.length - 1]._t),
     turns: turn, toolCalls: calls.length, followUps: Math.max(0, userMsgs - 1),
     baseContext, meanContext: turn ? Math.round(contextSum / turn) : 0, peakContext: peak, peakTurn, lifetime, tokens: tok, cost, thinkingShareOfOutput: tok.output ? tok.reasoning / tok.output : 0,
-    toolResultTokens: Math.round(toolChars / 4), byTool, largest, counts: count, milestones: ms, wallNotices, wallBlocks,
+    toolResultTokens: Math.round(toolChars / 4), cacheMisses, byTool, largest, counts: count, milestones: ms, wallNotices, wallBlocks,
     beforeFirstEdit: firstEdit ? { turns: firstEdit.turn, judged: firstEdit.judged } : { turns: turn, judged: judgedAt[turn - 1] ?? 0, never: true },
     finalWords: words, violations: v, watchdog: (audit.get(agentId) ?? []).map((a) => ({ kind: a.kind, at: a.recordedAt, reason: a.reason ?? a.breaches?.map((b: Json) => `${b.name} ${k(b.value)}`).join(", ") })),
   };
@@ -260,6 +265,7 @@ for (const r of reports) {
   const c = r.counts;
   out.push(`- Builds ${c.builds}; test runs ${c.testsFull} full / ${c.testsTargeted} targeted; commits ${c.commits}; pushes ${c.pushes}; PRs created ${c.prCreates}; docker runs ${c.dockerRuns}; reads ${c.reads} (${c.readsUnbounded} without a limit); bash ${c.bashCalls}.`);
   out.push(`- Milestones: ${Object.entries(r.milestones).map(([n, m]) => `${n} turn ${m!.turn} (${m!.minute.toFixed(0)} min, ${k(m!.judged)})`).join("; ") || "none"}.`);
+  if (r.cacheMisses.length) out.push(`- Cache misses (whole context re-written): ${r.cacheMisses.map((c) => `turn ${c.turn} +${k(c.tokens)}${Number.isFinite(c.gapSeconds) ? ` after ${c.gapSeconds}s` : ""}`).join("; ")}.`);
   out.push(`- Context wall: ${r.wallNotices.length} notice(s)${r.wallNotices.length ? ` at turns ${r.wallNotices.map((w) => w.turn).join(", ")}` : ""}; ${r.wallBlocks} blocked call(s). Final message ${r.finalWords} words.`);
   if (r.watchdog.length) out.push(`- Watchdog: ${r.watchdog.map((w) => `${w.kind}${w.reason ? ` (${w.reason})` : ""}`).join("; ")}.`);
   out.push(`- By tool: ${Object.entries(r.byTool).sort((a, b) => b[1].tokens - a[1].tokens).map(([n, b]) => `${n} ${b.calls}× ≈${k(b.tokens)}`).join(", ")}.`, "");
