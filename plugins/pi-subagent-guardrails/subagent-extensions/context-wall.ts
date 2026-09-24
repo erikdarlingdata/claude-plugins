@@ -27,6 +27,15 @@
  * (~/.pi/agent/subagent-watchdog.json, when the hard stop is enabled). No minute limit anywhere = no time wall.
  * The clock starts when this extension loads in the child, a few seconds after the watchdog's clock.
  *
+ * Protected checkouts: `protectedCheckouts` in context-wall.json lists directories no subagent may write, such as a
+ * person's own main checkout. At ANY size, not only past the wall, a bash command that names one (absolute, `~/`,
+ * `$HOME/` or `../<name>` form) or runs with its cwd inside one is refused when it runs a git subcommand that writes
+ * the worktree, the index or refs (checkout, switch, restore, reset, stash, clean, pull, merge, rebase, commit, add,
+ * rm, mv, cherry-pick, revert, am, apply, read-tree, update-index, checkout-index, gc, prune). A write/edit to a path
+ * inside one is refused too. Reading stays allowed (git show/log/diff/status/fetch/grep/worktree add, sed, cat).
+ * Why: on 2026-09-24 a read-only scout ran `git checkout <branch> -- .` and then `git checkout dev -- .` in its
+ * parent's main checkout to read a branch's files, overwriting that checkout's staged state.
+ *
  * Fails open: any error is a no-op, so a bug here can never block or spam an agent. This is a budget wall, not a
  * security sandbox (a `$(...)` inside a git command still runs).
  */
@@ -110,6 +119,64 @@ export function wrapUpAllowed(toolName: string, input: unknown): boolean {
   return false;
 }
 
+const WRITING_GIT =
+  /\bgit\b(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+|--no-pager|-P))*\s+(checkout|switch|restore|reset|stash|clean|pull|merge|rebase|commit|add|rm|mv|cherry-pick|revert|am|apply|read-tree|update-index|checkout-index|gc|prune)\b/;
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The protected directories from context-wall.json, `~` expanded, trailing slashes dropped. */
+export function readProtectedCheckouts(): string[] {
+  try {
+    const dir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+    const raw = readJson(join(dir, "context-wall.json"))?.protectedCheckouts;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((p): p is string => typeof p === "string" && p.trim().length > 1)
+      .map((p) => p.trim().replace(/^~(?=\/)/, homedir()).replace(/\/+$/, ""));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The protected checkout a tool call would write, or null. `cwd` is the agent's working directory; `home` is a test
+ * seam. Named forms: the absolute path, `~/...`, `$HOME/...`, `${HOME}/...`, and `../<basename>` (a sibling worktree
+ * reaching over). Each must end at a path boundary, so `.../PerformanceMonitor-wt` is not the checkout.
+ */
+export function protectedWriteTarget(
+  toolName: string,
+  input: unknown,
+  cwd: string,
+  protectedDirs: string[],
+  home: string = homedir(),
+): string | null {
+  if (protectedDirs.length === 0) return null;
+  const args = (input ?? {}) as Record<string, unknown>;
+  const inside = (p: string, d: string) => p === d || p.startsWith(d + "/");
+  if (toolName === "write" || toolName === "edit") {
+    const raw = typeof args.path === "string" ? args.path : "";
+    if (!raw) return null;
+    const abs = raw.startsWith("~/") ? home + raw.slice(1) : raw.startsWith("/") ? raw : join(cwd, raw);
+    return protectedDirs.find((d) => inside(abs, d)) ?? null;
+  }
+  if (toolName !== "bash") return null;
+  const cmd = typeof args.command === "string" ? args.command : "";
+  if (!WRITING_GIT.test(cmd)) return null;
+  const end = "(?=$|[\\s/'\"`;&|)])";
+  for (const d of protectedDirs) {
+    if (inside(cwd, d)) return d;
+    const forms = [escapeRe(d)];
+    if (inside(d, home) && d !== home) {
+      const rel = escapeRe(d.slice(home.length)); // "/Documents/..."
+      forms.push(`~${rel}`, `\\$HOME${rel}`, `\\$\\{HOME\\}${rel}`);
+    }
+    const base = d.split("/").pop();
+    if (base) forms.push(`(?:\\.\\./)+${escapeRe(base)}`);
+    if (forms.some((f) => new RegExp(f + end).test(cmd))) return d;
+  }
+  return null;
+}
+
 /** Test seam: the clock the time wall reads. */
 export const clock = { now: () => Date.now() };
 
@@ -159,6 +226,22 @@ export default function contextWall(pi: ExtensionAPI) {
       const args = (event.input ?? {}) as Record<string, unknown>;
       if ((event.toolName === "write" || event.toolName === "edit") && !/\.(md|txt)$/i.test(String(args.path ?? ""))) {
         codeEdited = true;
+      }
+      const guarded = protectedWriteTarget(
+        event.toolName,
+        event.input,
+        String((ctx as { cwd?: unknown })?.cwd ?? process.cwd()),
+        readProtectedCheckouts(),
+      );
+      if (guarded != null) {
+        return {
+          block: true,
+          reason:
+            `context-wall: ${guarded} is a protected checkout (someone's own working copy). Nothing may write its ` +
+            `files, index or refs: no git checkout/switch/restore/reset/stash/clean/pull/commit/add there, and no ` +
+            `write or edit inside it. To read another ref's files, use \`git show <ref>:<path>\`, \`git diff\` or ` +
+            `\`git ls-tree\` from your own worktree. This is not a bug, and there is no override.`,
+        };
       }
       if (event.toolName === "bash" && /\bgit\s+push\b|\bgh\s+pr\s+create\b/.test(String(args.command ?? ""))) {
         pushed = true;

@@ -45,6 +45,16 @@ stopped in the middle of a full test run loses its push and its report. The wall
 `hardStop.minutes` (read from `~/.pi/agent/subagent-watchdog.json`, only when its hard stop is enabled): 20 and 25
 for a 30-minute stop. With no minute limit anywhere, there is no time wall.
 
+**Protected checkouts.** List directories no subagent may write in `protectedCheckouts`, for example your own main
+checkout, which agents otherwise treat as a scratch copy. At any size, a bash command is refused when it names one
+(absolute, `~/`, `$HOME/` or `../<name>` form), or runs from inside one, AND runs a git subcommand that writes the
+worktree, the index or refs: checkout, switch, restore, reset, stash, clean, pull, merge, rebase, commit, add, rm, mv,
+cherry-pick, revert, am, apply, read-tree, update-index, checkout-index, gc or prune. A write or edit to a path inside
+one is refused too. Reading still works: `git show`, `log`, `diff`, `status`, `fetch`, `grep`, `worktree add`, `sed`
+and `cat`. The refusal points the agent at `git show <ref>:<path>`. Why: a read-only scout once ran
+`git checkout <branch> -- .` and then `git checkout dev -- .` in its parent's main checkout to read a branch's files,
+and overwrote that checkout's staged work. Self-test: `node --experimental-strip-types tools/context-wall-selftest.mts`.
+
 It fails open: any error is a no-op, so a bug can't block or spam an agent. It's a budget wall, not a security
 sandbox (a `$(...)` inside a git command still runs).
 
@@ -63,7 +73,7 @@ Add the line to each agent file in `~/.pi/agent/agents/` whose children should b
 reviewer, and so on). `agents/lane.md` already has it.
 
 Thresholds live in `~/.pi/agent/context-wall.json` (copy [`context-wall.example.json`](context-wall.example.json)).
-The file is read on every call, so no reload is needed. A missing file or bad values fall back to 100k / 150k / 200k / 250k.
+The file is read on every call, so no reload is needed. A missing file or bad values fall back to 100k / 150k / 200k / 250k, and no protected checkouts.
 
 **Smoke test:** set `{"warn1": 1, "warn2": 900000000, "wall": 2}`, spawn a cheap subagent that runs `ls` and then
 `git --version`, and check that `ls` is refused with a `context-wall:` reason while `git` runs and carries the
