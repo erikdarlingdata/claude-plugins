@@ -127,7 +127,7 @@ Use it after every wave. Put the numbers that justify a change to a brief, an ag
 `~/.pi/agent/subagents.json` (pi-subagents):
 
 ```json
-{ "maxConcurrent": 3, "maxConcurrentForeground": 1, "strictAgentFiles": true }
+{ "maxConcurrent": 7, "maxConcurrentForeground": 1, "strictAgentFiles": true }
 ```
 
 `~/.pi/agent/subagent-watchdog.json`: wake the parent only for an agent at the wall, and hard-stop past it:

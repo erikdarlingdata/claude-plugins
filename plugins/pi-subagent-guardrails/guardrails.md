@@ -23,10 +23,10 @@ wakes is the bill.
 
 ## 1. Fan-out
 
-- **At most 3 subagents running at once per session**, and **at most 5 agent processes running at once across the
-  whole machine** (all seats, headless runs, subagents, workflow children, fan-out candidates). "Running" means
-  working: an idle seat waiting on its user doesn't count, but an agent waiting on its own test run does. More needs
-  the operator's explicit OK, given for that wave, not standing.
+- **Up to 8 subagents running at once per top-level agent** (each seat or coordinator session), and **no
+  machine-wide cap**. "Running" means working: an agent waiting on its own test run counts. More than 8 needs the
+  operator's explicit OK, given for that wave, not standing. The practical limit is the machine: back off on OOM,
+  timeouts or stalled builds.
 - **One agent per issue is not a plan.** Batch small RELATED issues (same files or subsystem) into ONE agent that
   works them in rank order, sized to finish inside the subagent wall-clock limit (section 4). Measured 2026-09-23: a
   Sonnet lane closed 3–4 related issues in 35–45 minutes. A large or unrelated item gets its own agent.
@@ -157,8 +157,8 @@ Also:
 Where a harness enforces caps (a concurrency limit, a model allowlist, a context or time watchdog), keep its settings
 at or below these rules. The pi settings below are the recommended ones; the plugin README has the exact JSON.
 
-- **pi-subagents** (`~/.pi/agent/subagents.json`): `maxConcurrent: 3` (background) and `maxConcurrentForeground: 1`.
-  These are separate pools, so the mechanical ceiling is 4; the rule is still 3. There is no forced model: the agent
+- **pi-subagents** (`~/.pi/agent/subagents.json`): `maxConcurrent: 7` (background) and `maxConcurrentForeground: 1`.
+  These are separate pools, so the mechanical ceiling is 8, the same as the rule. There is no forced model: the agent
   files carry the tiers.
 - **pi context wall** (`subagent-extensions/context-wall.ts` in this plugin; thresholds in
   `~/.pi/agent/context-wall.json`, read live): loaded only into subagents, via each agent file's `extensions:` line, never into interactive sessions.
@@ -178,7 +178,7 @@ at or below these rules. The pi settings below are the recommended ones; the plu
   agent file or a threshold names the agent-report number it should move, and the next wave's report checks it.
 - **Claude Code has no watchdog.** Every rule here is honor system there.
 
-**Honor system everywhere:** the machine-wide 5-process cap, follow-up discipline, seat session length, the
+**Honor system everywhere:** the 8-subagent cap where no harness enforces it, follow-up discipline, seat session length, the
 standing-prompt cap, and ranking. Name any violation in the next handoff.
 
 ## Tool names: pi and Claude Code
