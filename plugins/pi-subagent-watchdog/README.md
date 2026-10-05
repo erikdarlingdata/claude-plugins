@@ -172,7 +172,8 @@ restart either way.
     `~/.pi/agent/subagent-ledger`), one file per UTC day named
     `YYYY-MM-DD.jsonl`, one JSON object per line with at least
     `{ "ts": "<ISO string>", "cost": <USD number>, "sessionId": "<string>" }`.
-    Daily total = sum of `cost` in today's file. The file is re-read only when
+    Daily total = sum of `cost` in today's file, skipping lines with
+    `"kind": "seat"` (a session's own spend, which the same ledger also holds). The file is re-read only when
     its size changes, on the poll tick. A missing directory or file counts as
     0; malformed lines are skipped. The daily check runs on the poll tick, so
     it only sees new spend while agents are running.

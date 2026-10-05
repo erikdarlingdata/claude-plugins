@@ -123,8 +123,9 @@ The footer shows input, output, cache-read, cache-write, cost, and context usage
 `showCacheMissNotices: true` when investigating expensive misses.
 
 Subagents run in their own sessions, so the footer's `$` leaves out what they
-spend unless pi-subagents' `reportUsage` setting is on. To see that spend by
-agent type and thinking level, and across every session on the machine, use the
+spend unless pi-subagents' `reportUsage` setting is on. The footer also covers
+one session only. To see spend by agent type and thinking level, and every
+session's own spend plus its agents' across the machine, use the
 `subagent-cost.ts` recipe (section 14).
 
 `cacheWarming` is `off`, `streaming`, or `idle` and defaults to `streaming`.
@@ -132,6 +133,38 @@ Direct OpenAI currently has no built-in cache-lifetime metadata for Pi's warmer,
 so warming may report unavailable even when provider-side prompt caching exists.
 `PI_CACHE_RETENTION=long` requests longer retention where supported; inspect
 `/session` rather than assuming it took effect.
+
+### Compaction budget on large-context models
+
+Pi caps the compaction summary at `min(0.8 × compaction.reserveTokens, model
+maxTokens)` (checked against Pi 0.87.0's `compaction.js`). The default
+`reserveTokens` is 16384, so the summary gets about 13K output tokens. Compaction
+also runs at the session's current thinking level, and reasoning tokens count
+against that same cap. A long session on a 1M-context model at `xhigh` can use up
+the budget before the summary finishes:
+
+```text
+Error: Compaction failed: Summarization failed: generation hit the token cap and the summary is incomplete
+```
+
+Retrying fails the same way every time. Give large-context models a bigger
+reserve with a per-model override; keys are exact `provider/modelId` values:
+
+```json
+{
+  "compaction": {
+    "modelOverrides": {
+      "openrouter/anthropic/claude-opus-5.5": { "reserveTokens": 65536 }
+    }
+  }
+}
+```
+
+On a 1M window this raises the summary cap to about 52K and moves auto-compaction
+from about 984K to about 934K tokens. `reserveTokens` is also the headroom the
+summarization request itself needs, so raise it moderately rather than to the
+model's full output limit. `/reload` re-reads settings. To recover a session
+that is already stuck, see §15.
 
 ## 3. Trust, approvals, and safer modes
 
@@ -638,8 +671,8 @@ Available recipes:
 - `settle-bell.ts` — BEL on `agent_settled`; terminal-native attention marker
 - `refusal-fallback.ts` — advanced, policy-sensitive automatic fallback
 - `subagent-cost.ts` — subagent spend in the footer by type and thinking level,
-  a machine-wide ledger, and `/subagent-cost` reports by type, agent or session
-  over any day range. Needs a pi-subagents build with the `subagents:usage`
+  a machine-wide ledger of every session's own spend and its agents', and
+  `/subagent-cost` reports by type, agent, session or issue over any day range. Needs a pi-subagents build with the `subagents:usage`
   event (see the recipe README). `recipes/scripts/subagent-ledger-backfill.py`
   rebuilds the ledger from saved subagent sessions.
 
@@ -667,6 +700,12 @@ Copy only what you want into `~/.pi/agent/extensions/`, review it first, and run
   models with `pi update --models`. If the catalog still overclaims
   `supportsMidConvoEffort`, apply a model-specific `compat` override in
   `~/.pi/agent/models.json`; remove it once the upstream catalog is corrected.
+- **`Compaction failed: … hit the token cap`:** in the stuck session, run
+  `/reload` if you just changed settings, then `/thinking` → `off`, `/compact`,
+  and restore the thinking level afterward. Prevent a repeat with the
+  `compaction.modelOverrides` reserve in §2. If it still fails with thinking off,
+  the history is too large for one pass: `/tree` or `/fork` back to an earlier
+  point, or have the agent write a handoff file and start `/new` from it.
 - **Slow/hung quota failure:** verify `retry.provider.maxRetries` is `0` and
   `retry.maxAgentDelayMs` is bounded.
 - **Cache surprise:** inspect `/session`; temporarily enable
