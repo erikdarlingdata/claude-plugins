@@ -1149,7 +1149,10 @@ export default function (pi: ExtensionAPI) {
       for (const line of readFileSync(file, "utf8").split("\n")) {
         if (!line.trim()) continue;
         try {
-          const c = (JSON.parse(line) as { cost?: unknown })?.cost;
+          const row = JSON.parse(line) as { cost?: unknown; kind?: unknown };
+          // A session's own spend shares the ledger; this budget is for subagents.
+          if (row?.kind === "seat") continue;
+          const c = row?.cost;
           if (typeof c === "number" && Number.isFinite(c) && c > 0) total += c;
         } catch {
           /* malformed line — skip */

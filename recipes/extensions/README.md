@@ -31,16 +31,25 @@ reloading their parent session.
 | `bang-notify.ts` | Wake Pi when a contextual `!` command finishes; learn command completions | `~/.pi/agent/bang-notify.json`; history in `bang-history.json` |
 | `settle-bell.ts` | Ring BEL on `agent_settled` | Configure the terminal's bell/attention behavior |
 | `refusal-fallback.ts` | Retry an approved false-positive provider refusal on another model | Edit constants in the source |
-| `subagent-cost.ts` | Subagent spend by type and thinking level: footer chip, machine-wide ledger, `/subagent-cost` reports | `/subagent-cost [types\|agents\|sessions] [session\|today\|week\|<N>d]`; ledger in `~/.pi/agent/subagent-ledger/` |
+| `subagent-cost.ts` | Session and subagent spend: footer chip by agent type and thinking level, machine-wide ledger, `/subagent-cost` reports | `/subagent-cost [types\|agents\|sessions\|issues] [session\|today\|week\|<N>d]`; ledger in `~/.pi/agent/subagent-ledger/` |
 
 ## subagent-cost.ts
 
+**What it counts.** Each session's own spend (its assistant messages and
+compactions) and its subagents' spend, kept apart. A session's own lines carry
+`"kind": "seat"`. Only the first instance in a pi process records seat lines:
+pi-subagents runs children in the same process, and a child that loads this
+extension must not record its messages as a seat. A separate headless `pi -p`
+process records itself, labelled `(no session file)`.
+
 **Requirement.** It listens for `subagents:usage`, which pi-subagents emits once
 per assistant message for every agent: top-level, nested and workflow children.
-The event is not in the npm release of `@tintinweb/pi-subagents` yet. It is on
-the `integration/opus-subagents` branch of
+The event is not in the npm release of `@tintinweb/pi-subagents` yet
+(proposed upstream in tintinweb/pi-subagents#377). It is on the
+`integration/opus-subagents` branch of
 <https://github.com/erikdarlingdata/pi-subagents>. Without it the extension
-loads, the chip stays empty, and the reports show only backfilled history.
+loads and still records each session's own spend; the chip stays empty, and
+subagent rows come only from the backfill.
 
 **Footer.** Status key `subagent-usage`, text like
 `agents $3.30 (reviewer/high $2.10, lane/medium $1.20, scout/low* $0.15)`. A `*`
@@ -51,8 +60,10 @@ The session `$` excludes subagent spend unless pi-subagents' `reportUsage` is
 on, so the two figures do not overlap.
 
 **Reports.** `/subagent-cost` shows this session by type, thinking level and
-model. Add `agents` for the most expensive agents, or `sessions` for spend per
-session. Add `today`, `week` or `<N>d` to read the ledger and cover every pi
+model, with the session's own spend as `seat` rows and an average cost per
+agent. Add `agents` for the most expensive agents, `sessions` for each
+session's own and agent spend, or `issues` for agent spend per issue or PR
+number (the first `#123` in an agent's description; repos are not told apart). Add `today`, `week` or `<N>d` to read the ledger and cover every pi
 session on the machine. Every view has a `time` column: the sum of gaps between
 an agent's messages, each capped at 10 minutes, so idle time between resumes is
 not counted.
@@ -61,14 +72,19 @@ not counted.
 `~/.pi/agent/subagent-ledger/YYYY-MM-DD.jsonl` (UTC day): `ts`, `sessionId`,
 `sessionName`, `cwd`, `id`, `type`, `description`, `model`, `thinking`,
 `requestedThinking`, `depth`, `parentAgentId`, `workflowId`, `cost`, `input`,
-`output`, `cacheRead`, `cacheWrite`. The watchdog's `budget.dailyUsd` reads it.
+`output`, `cacheRead`, `cacheWrite`, and `kind: "seat"` on a session's own
+lines (type `seat`, id = the session id). The watchdog's `budget.dailyUsd` reads
+it and skips seat lines.
 Plan on roughly 2–10 MB per busy day.
 
 **Backfill.** `recipes/scripts/subagent-ledger-backfill.py` rebuilds ledger lines
-from the sessions pi-subagents saves for top-level agents (`rememberAgents`, on
-by default). Run `--dry-run` first. Lines get `"source": "backfill"`; re-running
-replaces earlier backfill lines, and an agent's messages are skipped once the
-live extension has a line for it, so it is safe to run at any time. Nested
+from saved sessions: subagents (pi-subagents saves top-level agents with
+`rememberAgents`, on by default), every other session as a seat (a message
+copied into a fork counts once), and the per-agent usage the old `subagent`
+example tool left in its results. Run `--dry-run` first. Lines get
+`"source": "backfill"`; re-running replaces earlier backfill lines, and an agent
+or seat's messages are skipped once the live extension has a line for it, so it
+is safe to run at any time. Nested
 agents are not saved and cannot be recovered, and neither is the thinking level
 an agent asked for.
 
