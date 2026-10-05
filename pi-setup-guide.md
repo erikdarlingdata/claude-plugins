@@ -122,6 +122,11 @@ The footer shows input, output, cache-read, cache-write, cost, and context usage
 `/session` shows totals and the current cache-warming decision. Temporarily set
 `showCacheMissNotices: true` when investigating expensive misses.
 
+Subagents run in their own sessions, so the footer's `$` leaves out what they
+spend unless pi-subagents' `reportUsage` setting is on. To see that spend by
+agent type and thinking level, and across every session on the machine, use the
+`subagent-cost.ts` recipe (section 14).
+
 `cacheWarming` is `off`, `streaming`, or `idle` and defaults to `streaming`.
 Direct OpenAI currently has no built-in cache-lifetime metadata for Pi's warmer,
 so warming may report unavailable even when provider-side prompt caching exists.
@@ -595,6 +600,27 @@ Surfaces:
 A steer cannot interrupt a running tool call; only a hard stop can. Wall clock
 is therefore the only signal that catches a child wedged inside one giant tool.
 
+Cost controls. All are off until you set a value:
+
+| Setting | Effect |
+| --- | --- |
+| `signals.costUsd` | Check-in when one agent's spend passes the amount |
+| `hardStop.costUsd` | Stop one agent at the amount (needs `hardStop.enabled`) |
+| `budget.sessionUsd` | Warn the parent each time this session's subagent spend passes 1×, 2×, 3× the amount |
+| `budget.dailyUsd` | Same, for today's (UTC) spend across every pi session, read from the ledger |
+| `budget.ledgerDir` | Ledger directory; default `~/.pi/agent/subagent-ledger` |
+
+Budget warnings never stop an agent. The per-agent signals read pi-subagents'
+own lifetime cost and work with any version. The session budget needs the
+`subagents:usage` event, and the daily budget needs the ledger that the
+`subagent-cost.ts` recipe writes (section 14). With neither in place they stay
+at $0. Each session watches the ledger on its own, so every session with agents
+running gets its own daily warning.
+
+To get a feel for real numbers before choosing values, leave them unset and use
+`subagent_vitals`, `/watchdog status` (shows this session's spend) and
+`/subagent-cost`.
+
 Full details:
 <https://github.com/erikdarlingdata/claude-plugins/tree/main/plugins/pi-subagent-watchdog>
 
@@ -611,6 +637,11 @@ Available recipes:
 - `bang-notify.ts` — completion wake-ups and learned `!` command suggestions
 - `settle-bell.ts` — BEL on `agent_settled`; terminal-native attention marker
 - `refusal-fallback.ts` — advanced, policy-sensitive automatic fallback
+- `subagent-cost.ts` — subagent spend in the footer by type and thinking level,
+  a machine-wide ledger, and `/subagent-cost` reports by type, agent or session
+  over any day range. Needs a pi-subagents build with the `subagents:usage`
+  event (see the recipe README). `recipes/scripts/subagent-ledger-backfill.py`
+  rebuilds the ledger from saved subagent sessions.
 
 Copy only what you want into `~/.pi/agent/extensions/`, review it first, and run
 `/reload` only after useful subagents have finished.
