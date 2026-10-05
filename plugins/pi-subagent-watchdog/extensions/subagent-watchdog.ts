@@ -51,6 +51,18 @@ interface Signals {
   minutes?: number | null;
   /** Session compactions — a compacting "small task" child is a strong runaway tell. */
   compactions?: number | null;
+  /** Lifetime USD spend of one agent (record.lifetimeUsage.cost). null = off. */
+  costUsd?: number | null;
+}
+
+/** Spend budgets across agents. Warnings only — a crossing never stops an agent. null/absent = off. */
+interface Budget {
+  /** USD for this pi session (sum of subagents:usage events, nested children included). */
+  sessionUsd?: number | null;
+  /** USD per UTC day across all pi sessions, summed from the ledger. */
+  dailyUsd?: number | null;
+  /** Directory of YYYY-MM-DD.jsonl ledger files (default ~/.pi/agent/subagent-ledger). */
+  ledgerDir?: string | null;
 }
 
 interface WatchdogConfig {
@@ -80,6 +92,7 @@ interface WatchdogConfig {
   /** Delivery mode for the wake message. "steer" interrupts after the current tool batch. */
   deliverAs: "steer" | "followUp";
   signals: Signals;
+  budget: Budget;
   models: {
     /** Exact effective provider/model id required for every watched top-level agent. */
     required?: string | null;
@@ -99,6 +112,7 @@ interface WatchdogConfig {
     enabled: boolean;
     tokens?: number | null;
     minutes?: number | null;
+    costUsd?: number | null;
   };
 }
 
@@ -121,7 +135,9 @@ const DEFAULTS: WatchdogConfig = {
     turns: 30,
     minutes: 10,
     compactions: 1,
+    costUsd: null,
   },
+  budget: { sessionUsd: null, dailyUsd: null, ledgerDir: null },
   models: {
     required: null,
     allowed: null,
@@ -132,8 +148,11 @@ const DEFAULTS: WatchdogConfig = {
     enabled: false,
     tokens: 1_500_000,
     minutes: 45,
+    costUsd: null,
   },
 };
+
+const DEFAULT_LEDGER_SUBDIR = "subagent-ledger";
 
 function agentDir(): string {
   return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
@@ -161,6 +180,15 @@ function optNum(v: unknown, fallback: number | null | undefined): number | null 
   return n;
 }
 
+/** Resolve budget.ledgerDir: "~" expands to home; blank/non-string → the default under the agent dir. */
+function ledgerDirOf(v: unknown): string {
+  const raw = typeof v === "string" ? v.trim() : "";
+  if (!raw) return join(agentDir(), DEFAULT_LEDGER_SUBDIR);
+  if (raw === "~") return homedir();
+  if (raw.startsWith("~/")) return join(homedir(), raw.slice(2));
+  return raw;
+}
+
 function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
   const global = readJson(join(agentDir(), "subagent-watchdog.json"));
   const project = projectTrusted
@@ -172,10 +200,12 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
     ...project,
     signals: { ...DEFAULTS.signals, ...global?.signals, ...project?.signals },
     models: { ...DEFAULTS.models, ...global?.models, ...project?.models },
+    budget: { ...DEFAULTS.budget, ...global?.budget, ...project?.budget },
     hardStop: { ...DEFAULTS.hardStop, ...global?.hardStop, ...project?.hardStop },
   } as Record<string, unknown> & {
     signals: Record<string, unknown>;
     models: Record<string, unknown>;
+    budget: Record<string, unknown>;
     hardStop: Record<string, unknown>;
   };
   // Sanitize — user JSON can hold strings, zeros, negatives (review finding #4).
@@ -232,6 +262,12 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
       turns: optNum(m.signals.turns, DEFAULTS.signals.turns),
       minutes: optNum(m.signals.minutes, DEFAULTS.signals.minutes),
       compactions: optNum(m.signals.compactions, DEFAULTS.signals.compactions),
+      costUsd: optNum(m.signals.costUsd, DEFAULTS.signals.costUsd),
+    },
+    budget: {
+      sessionUsd: optNum(m.budget.sessionUsd, null),
+      dailyUsd: optNum(m.budget.dailyUsd, null),
+      ledgerDir: ledgerDirOf(m.budget.ledgerDir),
     },
     models: {
       required: modelConfigurationError || !requiredModelInput ? null : requiredModelInput,
@@ -244,6 +280,7 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
       enabled: m.hardStop.enabled === true,
       tokens: optNum(m.hardStop.tokens, DEFAULTS.hardStop.tokens),
       minutes: optNum(m.hardStop.minutes, DEFAULTS.hardStop.minutes),
+      costUsd: optNum(m.hardStop.costUsd, DEFAULTS.hardStop.costUsd),
     },
   };
 }
@@ -271,7 +308,7 @@ interface SubagentRecord {
   startedAt: number;
   compactionCount?: number;
   outputFile?: string;
-  lifetimeUsage?: { input?: number; output?: number; cacheWrite?: number; cacheRead?: number };
+  lifetimeUsage?: { input?: number; output?: number; cacheWrite?: number; cacheRead?: number; cost?: number };
   /** Effective model identity populated by pi-subagents once the child session exists. */
   invocation?: {
     modelName?: string;
@@ -334,6 +371,8 @@ interface Vitals {
   turns: number;
   minutes: number;
   compactions: number;
+  /** Lifetime USD spend (0 when pi-subagents reports none). */
+  costUsd: number;
 }
 
 interface PendingCheckIn {
@@ -457,6 +496,7 @@ function readVitals(w: Watched, rec: SubagentRecord): Vitals {
     turns: w.turns,
     minutes: (Date.now() - rec.startedAt) / 60_000,
     compactions: rec.compactionCount ?? 0,
+    costUsd: Number.isFinite(lu.cost) ? (lu.cost as number) : 0,
   };
 }
 
@@ -504,6 +544,7 @@ function dueBreaches(w: Watched, v: Vitals, cfg: WatchdogConfig): Breach[] {
   check("turns", v.turns, cfg.signals.turns);
   check("minutes", v.minutes, cfg.signals.minutes);
   check("compactions", v.compactions, cfg.signals.compactions);
+  check("costUsd", v.costUsd, cfg.signals.costUsd);
   return out;
 }
 
@@ -513,10 +554,16 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+function fmtUsd(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
 function fmtSignal(b: Breach): string {
   switch (b.name) {
     case "tokens":
       return `tokens ${fmtTokens(b.value)} ≥ ${fmtTokens(b.threshold)}`;
+    case "costUsd":
+      return `cost ${fmtUsd(b.value)} ≥ ${fmtUsd(b.threshold)}`;
     case "contextPercent":
       return `context ${Math.round(b.value)}% ≥ ${b.threshold}%`;
     case "minutes":
@@ -533,6 +580,7 @@ function vitalsLine(v: Vitals): string {
     v.turns > 0 ? `${v.turns} turns` : undefined,
     v.contextPercent != null ? `context ${Math.round(v.contextPercent)}%` : undefined,
     v.compactions > 0 ? `${v.compactions} compaction${v.compactions === 1 ? "" : "s"}` : undefined,
+    v.costUsd > 0 ? fmtUsd(v.costUsd) : undefined,
     `${v.minutes.toFixed(1)} min elapsed`,
   ];
   return parts.filter(Boolean).join(" · ");
@@ -1040,6 +1088,11 @@ export default function (pi: ExtensionAPI) {
       if (cfg.hardStop.enabled && !w.hardStopped) {
         const ht = cfg.hardStop.tokens;
         const hm = cfg.hardStop.minutes;
+        const hc = cfg.hardStop.costUsd;
+        if (hc != null && hc > 0 && v.costUsd >= hc) {
+          hardStop(w, rec, v, `cost ${fmtUsd(v.costUsd)} ≥ hard limit ${fmtUsd(hc)}`);
+          continue;
+        }
         if (ht != null && ht > 0 && v.tokens >= ht) {
           hardStop(w, rec, v, `tokens ${fmtTokens(v.tokens)} ≥ hard limit ${fmtTokens(ht)}`);
           continue;
@@ -1054,7 +1107,136 @@ export default function (pi: ExtensionAPI) {
       const breaches = dueBreaches(w, v, cfg);
       if (breaches.length > 0) wake(w, rec, v, breaches);
     }
+    checkBudgets();
     setStatus();
+  }
+
+  // ---- Budget warnings (session + daily) ----
+  // Session: sum of per-message subagents:usage events (NOT record.lifetimeUsage — nested spend is
+  // folded into every ancestor record, so summing records double-counts).
+  // Daily: ledger file for today's UTC day, re-read only when its size changes.
+  let sessionSpend = 0;
+  const sessionBySpender = new Map<string, number>();
+  const budgetAnnounced = { session: 0, daily: 0 };
+  let dailyKey = "";
+  let dailySize = -1;
+  let dailyTotal = 0;
+  let budgetRetry: ReturnType<typeof setTimeout> | undefined;
+
+  const utcDay = () => new Date().toISOString().slice(0, 10);
+
+  function readDailyTotal(): number {
+    const day = utcDay();
+    if (day !== dailyKey) {
+      dailyKey = day;
+      dailySize = -1;
+      dailyTotal = 0;
+      budgetAnnounced.daily = 0;
+    }
+    const dir = cfg.budget.ledgerDir ?? join(agentDir(), DEFAULT_LEDGER_SUBDIR);
+    const file = join(dir, `${day}.jsonl`);
+    let size: number;
+    try {
+      size = statSync(file).size;
+    } catch {
+      dailySize = -1;
+      dailyTotal = 0;
+      return 0;
+    }
+    if (size === dailySize) return dailyTotal;
+    let total = 0;
+    try {
+      for (const line of readFileSync(file, "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const c = (JSON.parse(line) as { cost?: unknown })?.cost;
+          if (typeof c === "number" && Number.isFinite(c) && c > 0) total += c;
+        } catch {
+          /* malformed line — skip */
+        }
+      }
+    } catch {
+      return dailyTotal;
+    }
+    dailySize = size;
+    dailyTotal = total;
+    return total;
+  }
+
+  function topSpenders(): string {
+    return [...sessionBySpender.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([k, c]) => `${k} ${fmtUsd(c)}`)
+      .join(", ");
+  }
+
+  function checkBudgets() {
+    if (!isOwner || !cfg.enabled) return;
+    const sThr = cfg.budget.sessionUsd;
+    const dThr = cfg.budget.dailyUsd;
+    const msgs: string[] = [];
+    const commits: Array<() => void> = [];
+    if (sThr != null && sThr > 0) {
+      const n = Math.floor(sessionSpend / sThr);
+      if (n > budgetAnnounced.session) {
+        msgs.push(
+          `session budget ${fmtUsd(sThr)} crossed (${n}×): session total ${fmtUsd(sessionSpend)}. ` +
+            `Top spenders (type/thinking): ${topSpenders() || "n/a"}.`,
+        );
+        commits.push(() => (budgetAnnounced.session = n));
+      }
+    }
+    if (dThr != null && dThr > 0) {
+      const total = readDailyTotal();
+      const n = Math.floor(total / dThr);
+      if (n > budgetAnnounced.daily) {
+        msgs.push(`daily budget ${fmtUsd(dThr)} crossed (${n}×): UTC-day total across all pi sessions ${fmtUsd(total)}.`);
+        commits.push(() => (budgetAnnounced.daily = n));
+      }
+    }
+    if (msgs.length === 0) return;
+    // Same posture as agent check-ins: wake only when action=wake; notify-only needs a UI to surface.
+    if (cfg.action !== "wake") {
+      if (ctx?.hasUI !== true) return;
+      for (const m of msgs) notify(`watchdog: ${m}`);
+      for (const c of commits) c();
+      appendAudit("budget-crossed", { delivery: "notify-only", messages: msgs });
+      return;
+    }
+    const wait = lastGlobalWakeAt === 0 ? 0 : cfg.globalCooldownMs - (Date.now() - lastGlobalWakeAt);
+    if (wait > 0) {
+      // Global cooldown: retry once it elapses (the poll tick only runs while agents are running).
+      if (!budgetRetry) {
+        const t = setTimeout(() => {
+          budgetRetry = undefined;
+          pendingTimeouts.delete(t);
+          checkBudgets();
+        }, wait + 50);
+        budgetRetry = t;
+        pendingTimeouts.add(t);
+      }
+      return;
+    }
+    try {
+      pi.sendMessage(
+        {
+          customType: "subagent-watchdog",
+          content:
+            `[subagent-watchdog] Budget warning (no agent was stopped):\n` +
+            msgs.map((m) => `- ${m}`).join("\n") +
+            `\nDecide whether remaining work justifies the spend; consider narrowing scope or cheaper models.`,
+          display: true,
+        },
+        { deliverAs: cfg.deliverAs, triggerTurn: true },
+      );
+    } catch (err) {
+      notify(`watchdog: budget warning delivery failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      return;
+    }
+    for (const c of commits) c();
+    lastGlobalWakeAt = Date.now();
+    appendAudit("budget-crossed", { delivery: "wake", messages: msgs, sessionSpend, dailyTotal });
   }
 
   // ---- pi-subagents lifecycle events (shared bus; handlers get no ctx) ----
@@ -1073,6 +1255,16 @@ export default function (pi: ExtensionAPI) {
   });
   on("subagents:completed", (d) => untrack((d as { id?: string })?.id));
   on("subagents:failed", (d) => untrack((d as { id?: string })?.id));
+  on("subagents:usage", (d) => {
+    if (!isOwner) return;
+    const e = d as { type?: string; thinking?: string; usage?: { cost?: { total?: number } } };
+    const c = e?.usage?.cost?.total;
+    if (typeof c !== "number" || !Number.isFinite(c) || c <= 0) return;
+    sessionSpend += c;
+    const key = `${e.type ?? "?"}/${e.thinking ?? "default"}`;
+    sessionBySpender.set(key, (sessionBySpender.get(key) ?? 0) + c);
+    checkBudgets();
+  });
   on("subagents:compacted", (d) => {
     // A compaction is a point event worth reacting to immediately rather than
     // on the next poll — the record's compactionCount is already bumped.
@@ -1102,6 +1294,11 @@ export default function (pi: ExtensionAPI) {
     clearPendingCheckIns("session restarted before batch delivery", true);
     roster.clear();
     lastGlobalWakeAt = 0;
+    sessionSpend = 0;
+    sessionBySpender.clear();
+    budgetAnnounced.session = 0;
+    budgetAnnounced.daily = 0;
+    dailyKey = "";
     setStatus();
   });
 
@@ -1115,6 +1312,7 @@ export default function (pi: ExtensionAPI) {
     isOwner = false;
     for (const t of pendingTimeouts) clearTimeout(t);
     pendingTimeouts.clear();
+    budgetRetry = undefined;
     if (timer) {
       clearInterval(timer);
       timer = undefined;
@@ -1139,7 +1337,7 @@ export default function (pi: ExtensionAPI) {
     label: "Subagent Vitals",
     description:
       "Live identity and vitals for all currently watched (running) subagents: effective model, tokens, " +
-      "tool uses, derived turns, context %, compactions, elapsed time, and recent tool calls. " +
+      "tool uses, derived turns, context %, compactions, cost, elapsed time, and recent tool calls. " +
       "Use this when a subagent-watchdog check-in arrives, or any time you want a fleet health snapshot " +
       "without consuming results.",
     parameters: Type.Object({}),
@@ -1209,7 +1407,8 @@ export default function (pi: ExtensionAPI) {
         .map(([k, v]) => `${k}≥${v}`)
         .join(", ")}`,
       `modelPolicy: ${cfg.models.configurationError ? `INVALID · ${cfg.models.configurationError}` : cfg.models.allowed ? `${cfg.models.allowed.join(" | ")} · ${cfg.models.onViolation}` : "off"}`,
-      `hardStop: ${cfg.hardStop.enabled ? `tokens≥${cfg.hardStop.tokens ?? "-"} minutes≥${cfg.hardStop.minutes ?? "-"}` : "off"}`,
+      `hardStop: ${cfg.hardStop.enabled ? `tokens≥${cfg.hardStop.tokens ?? "-"} minutes≥${cfg.hardStop.minutes ?? "-"} costUsd≥${cfg.hardStop.costUsd ?? "-"}` : "off"}`,
+      `budget: session ${cfg.budget.sessionUsd != null ? fmtUsd(cfg.budget.sessionUsd) : "off"} (spent ${fmtUsd(sessionSpend)}) · daily ${cfg.budget.dailyUsd != null ? fmtUsd(cfg.budget.dailyUsd) : "off"} (ledger ${cfg.budget.ledgerDir ?? "default"})`,
       `registry: ${registry ? "connected" : "NOT FOUND (pi-subagents inactive?)"}`,
       `watched: ${roster.size}`,
     ];
@@ -1279,8 +1478,10 @@ export default function (pi: ExtensionAPI) {
       `    turns            assistant turns (transcript-derived)`,
       `    minutes          wall-clock since spawn — the only signal that catches a wedged tool`,
       `    compactions      child auto-compactions (≥1 on a small task is a red flag)`,
+      `    costUsd          lifetime USD spend of one agent (default off)`,
       `  models           { required, onViolation, unknownGraceMs } — exact live-model invariant`,
-      `  hardStop         { enabled, tokens, minutes } — automatic abort, outcome reported from the RPC reply`,
+      `  budget           { sessionUsd, dailyUsd, ledgerDir } — spend warnings only (never stops agents)`,
+      `  hardStop         { enabled, tokens, minutes, costUsd } — automatic abort, outcome reported from the RPC reply`,
       ``,
       `Docs: https://github.com/erikdarlingdata/claude-plugins/tree/main/plugins/pi-subagent-watchdog`,
     ].join("\n");

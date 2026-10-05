@@ -59,6 +59,7 @@ envelope of a healthy, thorough worker (~113k tokens / 10 tools / 7 turns /
 | `turns` | 30 | assistant turns, derived from the child's transcript |
 | `minutes` | 10 | wall clock — the **only** signal that catches a tool call wedged mid-execution |
 | `compactions` | 1 | the child auto-compacted; on a chunk-sized task that's a red flag |
+| `costUsd` | off (`null`) | one agent's lifetime USD spend (`lifetimeUsage.cost`); shown as `$1.23` in vitals |
 
 Different task shapes trip different signals first (big-read agents hit
 `tokens`, step-per-turn agents hit `turns`, wedged tools hit only `minutes`) —
@@ -152,7 +153,29 @@ restart either way.
   running tool call), the stop interrupts a wedged tool mid-execution. The
   outcome is reported to the orchestrator **from the RPC reply**: a failed or
   unanswered stop says so explicitly (agent still running, do not respawn) and
-  re-arms for retry.
+  re-arms for retry. `hardStop.costUsd` (default `null` = off) stops an agent
+  whose lifetime USD spend reaches the limit, same as `tokens`.
+- `budget` — spend **warnings** across agents (never a stop). All fields
+  optional; `null`/absent = off:
+  `{ "sessionUsd": 20, "dailyUsd": 100, "ledgerDir": "~/.pi/agent/subagent-ledger" }`.
+  When a total first crosses 1×, 2×, 3×… its threshold, the parent gets one
+  short check-in (same delivery path: `deliverAs`, `action`, fleet cooldown)
+  naming the budget, threshold and current total; the session warning also
+  lists the top 3 type/thinking spenders.
+  - **Session total** sums the `subagents:usage` event (one per assistant
+    message, every agent including nested and workflow children;
+    `usage.cost.total` is that message's USD) and resets on session start.
+    It deliberately does not sum agent records: nested spend is folded into
+    every ancestor record and would double-count.
+  - **Daily total** (UTC day, all pi sessions) is read from a ledger written by
+    a separate extension. Input contract: directory `ledgerDir` (default
+    `~/.pi/agent/subagent-ledger`), one file per UTC day named
+    `YYYY-MM-DD.jsonl`, one JSON object per line with at least
+    `{ "ts": "<ISO string>", "cost": <USD number>, "sessionId": "<string>" }`.
+    Daily total = sum of `cost` in today's file. The file is re-read only when
+    its size changes, on the poll tick. A missing directory or file counts as
+    0; malformed lines are skipped. The daily check runs on the poll tick, so
+    it only sees new spend while agents are running.
 
 ### Pairing with the context wall
 
