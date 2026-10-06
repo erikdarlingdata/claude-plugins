@@ -27,7 +27,7 @@ const run = async ($: Parameters<Parameters<typeof test>[1]>[0]) => {
 // sonnet: input 3 + cache write 3 x 1.25 + cache read 3 x 0.1 + output 15 = 22.05; opus: 5 + 6.25 + 0.5 + 25 = 36.75
 test('the default prices are the public list prices', async ($, on) => {
   engine(on)
-  expect(await run($ as never)).toMatch(/subagents \$22\.05 \(1\), main session \$36\.75/)
+  expect(await run($ as never)).toMatch(/subagents \$14\.70 \(1\), main session \$29\.40/)
 })
 
 test('priceTable sets each family\'s input and output price', { options: { priceTable: 'opus:10:50, sonnet:1:2' } }, async ($, on) => {
@@ -45,10 +45,10 @@ test('a model outside the priceTable is priced as its first family', { options: 
 test('cacheWriteMultiplier and cacheReadMultiplier scale the cache prices', { options: { cacheWriteMultiplier: 2, cacheReadMultiplier: 1 } }, async ($, on) => {
   engine(on)
   // sonnet: 3 + 6 + 3 + 15 = 27
-  expect(await run($ as never)).toMatch(/subagents \$27\.00 \(1\)/)
+  expect(await run($ as never)).toMatch(/subagents \$18\.00 \(1\)/)
 })
 
 test('an unreadable priceTable falls back to the defaults', { options: { priceTable: 'nonsense' } }, async ($, on) => {
   engine(on)
-  expect(await run($ as never)).toMatch(/subagents \$22\.05 \(1\)/)
+  expect(await run($ as never)).toMatch(/subagents \$14\.70 \(1\)/)
 })

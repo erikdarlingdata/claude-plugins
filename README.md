@@ -215,7 +215,7 @@ to read output files to check progress. Costs are list-price estimates, not your
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `priceTable` | `opus:5:25, sonnet:3:15, haiku:1:5` | Input and output USD per million tokens for each model family. A model id is matched by containing the family name. |
+| `priceTable` | `opus:4:20, sonnet:2:10, haiku:1:5, fable:10:50` | Input and output USD per million tokens for each model family. A model id is matched by containing the family name. |
 | `cacheWriteMultiplier` | 1.25 | Cache write price as a multiple of the input price. |
 | `cacheReadMultiplier` | 0.1 | Cache read price as a multiple of the input price. |
 

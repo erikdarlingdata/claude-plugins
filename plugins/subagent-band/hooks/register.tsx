@@ -36,10 +36,10 @@ const kilo = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n))
 const pad = (s: string, n: number) => (s.length >= n ? s.slice(0, n) : s + ' '.repeat(n - s.length))
 const usd = (n: number) => `$${n.toFixed(2)}`
 
-// Prices per million tokens (input, output), by model family: "opus:5:25, sonnet:3:15" -> [['opus', 5, 25], ['sonnet', 3, 15]].
+// Prices per million tokens (input, output), by model family: "opus:4:20, sonnet:2:10" -> [['opus', 4, 20], ['sonnet', 2, 10]].
 // A model whose id names none of the families is priced as the first one. Estimates, not the bill.
 type Prices = { table: [string, number, number][]; cacheWrite: number; cacheRead: number }
-const DEFAULT_PRICES = 'opus:5:25, sonnet:3:15, haiku:1:5'
+const DEFAULT_PRICES = 'opus:4:20, sonnet:2:10, haiku:1:5, fable:10:50'
 
 function parsePrices(value: unknown, cacheWrite: unknown, cacheRead: unknown): Prices {
   const parse = (text: string) =>
