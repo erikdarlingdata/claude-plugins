@@ -78,6 +78,110 @@ Or add just the skill, without the marketplace:
 
 As in Claude Code, the skill is model-invoked: point Copilot at a `.sqlplan` and ask.
 
+## Claude Code mods
+
+Small hook modules for people who run several agents at once. Each one is a
+plugin of its own. Install only the ones you want, and set their options in
+`/config` (or under `pluginConfigs` in `settings.json`). They need a Claude Code
+version that loads plugin hook modules.
+
+### `subagent-fence`
+
+Stops the mistakes an unattended agent makes that cannot be taken back.
+
+```
+/plugin install subagent-fence@erikdarling
+```
+
+For the main session and every subagent it refuses four things. A force-push.
+A push to a protected branch. A git command that skips the repository's hooks.
+Killing processes by name (`pkill`, `killall`, `taskkill /IM`,
+`Stop-Process -Name`), because a name match can kill another session's
+processes.
+
+Three more guards are off until you set them. One bans folders: nothing reads,
+writes or enters them. One keeps a subagent from editing a plain git checkout,
+or running a changing git command there, so it works in its own worktree. One
+stops a subagent reading a big text file whole instead of by offset and limit.
+
+| Option | Default | What it does |
+| :- | :- | :- |
+| `guard_force_push` | on | Refuse `--force`, `--force-with-lease`, `-f` and `+refspec` pushes |
+| `guard_protected_branches` | on | Refuse a push that targets a protected branch |
+| `protected_branches` | `main`, `master`, `dev` | The branch names a push cannot target |
+| `guard_no_verify` | on | Refuse the git flag that skips hooks |
+| `guard_kill_by_name` | on | Refuse killing processes by name |
+| `banned_paths` | none | Folders that nothing reads, writes or enters |
+| `guard_shared_checkout` | off | Keep subagents out of plain git checkouts |
+| `shared_checkout_root` | empty | Limit that guard to checkouts under this folder. Empty detects a plain checkout anywhere: a folder whose `.git` is a directory, where a linked worktree has a `.git` file |
+| `read_limit_bytes` | 0 (off) | Refuse a subagent's `Read` of a text file over this size when it gives no `limit` |
+
+### `model-allowlist`
+
+Checks the model a subagent is spawned with.
+
+```
+/plugin install model-allowlist@erikdarling
+```
+
+A pinned model id goes stale: a dated or versioned name keeps pointing at an
+old model after the tier moves on. This refuses a spawn that names one and asks
+for a tier alias (`opus`, `sonnet`, `haiku`) instead. A spawn with no model is
+always allowed, because the agent file or the parent decides then.
+
+You can add rules of your own. One example: the `lane` agent runs Sonnet, and
+Opus only when the brief says design, security or hard debugging. With no rules,
+every alias is allowed.
+
+| Option | Default | What it does |
+| :- | :- | :- |
+| `refuse_pinned_ids` | on | Refuse any model that is not an allowed alias |
+| `allowed_aliases` | `opus`, `sonnet`, `haiku`, `fable`, `inherit` | The names that count as aliases. A trailing `[1m]`-style suffix is ignored |
+| `rules` | none | One rule per entry, written `agent type pattern => model => brief pattern => message` |
+
+A rule applies when the spawn's agent type matches the first pattern and it
+names that model (`*` for any model). The brief must then match the brief
+pattern, or the spawn is refused. Leave the brief pattern empty to refuse the
+pairing outright. The message is optional and can use `{type}` and `{model}`.
+Patterns are case-insensitive regular expressions. A rule that does not parse
+is skipped. For example:
+
+```
+^(lane|worker-.*)$ => opus => \b(design|security|hard[- ]debug) => {type} runs sonnet; name the reason in the brief to use opus.
+```
+
+### `seat-resume`
+
+Brings interrupted sessions back after a crash, a reboot or a closed terminal.
+
+```
+/plugin install seat-resume@erikdarling
+```
+
+The plugin writes one small file per interactive session: its id, name, folder,
+permission mode and last activity. It marks the file when the session ends.
+`/resume-sessions` lists the sessions that died or were interrupted in the last
+72 hours, with the command that reopens each. The script's `-Launch` switch
+reopens all of them in terminal tabs. Sessions you left with `/exit`, Ctrl+C or
+`/clear` stay closed. The plugin name still says "seat", but everything you see
+says "session".
+
+This one is Windows only. The bundled script (`scripts/resume-sessions.ps1`) is
+PowerShell. It compares Windows process start times to tell a live session from
+a reused process id. It reopens tabs in [WezTerm](https://wezterm.org) or
+Windows Terminal. Nobody has tried the plugin on macOS or Linux.
+
+| Option | Default | What it does |
+| :- | :- | :- |
+| `registry_dir` | empty: `session-registry` in your Claude config folder | Where the per-session files go |
+| `sessions_dir` | empty: `sessions` in your Claude config folder | Where Claude Code records its running sessions |
+| `resume_script` | empty: the bundled script | The PowerShell script `/resume-sessions` runs |
+| `powershell` | `pwsh` | The program that runs it (`powershell` for Windows PowerShell 5.1) |
+| `terminal` | `wezterm` | `wezterm` or `windows-terminal`: where `-Launch` reopens sessions |
+
+The Claude config folder is `CLAUDE_CONFIG_DIR` when that is set, otherwise
+`.claude` in your home folder.
+
 ## pi
 
 This repository is also a [pi package](https://pi.dev/packages): the root

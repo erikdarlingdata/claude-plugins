@@ -48,6 +48,92 @@
         "tsql",
         "dba"
       ]
+    },
+    {
+      "name": "subagent-fence",
+      "displayName": "Subagent Fence",
+      "source": "./plugins/subagent-fence",
+      "description": "Refuses force-pushes, pushes to protected branches, git commands that skip hooks and kills by process name; optionally bans folders, keeps subagents out of shared checkouts and stops whole-file reads of big files.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Erik Darling",
+        "email": "erik@erikdarling.com",
+        "url": "https://erikdarling.com"
+      },
+      "homepage": "https://erikdarling.com",
+      "repository": "https://github.com/erikdarlingdata/claude-plugins",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "subagents",
+        "git",
+        "guardrails",
+        "safety",
+        "multi-agent"
+      ],
+      "tags": [
+        "subagents",
+        "git",
+        "guardrails",
+        "safety",
+        "multi-agent"
+      ]
+    },
+    {
+      "name": "model-allowlist",
+      "displayName": "Model Allowlist",
+      "source": "./plugins/model-allowlist",
+      "description": "Refuses a subagent spawn that names a pinned model id, and enforces your own per-agent-type model rules.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Erik Darling",
+        "email": "erik@erikdarling.com",
+        "url": "https://erikdarling.com"
+      },
+      "homepage": "https://erikdarling.com",
+      "repository": "https://github.com/erikdarlingdata/claude-plugins",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "subagents",
+        "models",
+        "guardrails",
+        "multi-agent"
+      ],
+      "tags": [
+        "subagents",
+        "models",
+        "guardrails",
+        "multi-agent"
+      ]
+    },
+    {
+      "name": "seat-resume",
+      "displayName": "Session Resume",
+      "source": "./plugins/seat-resume",
+      "description": "Keeps a registry of interactive sessions so /resume-sessions can list and reopen the ones a crash, reboot or closed terminal interrupted. Windows, PowerShell, WezTerm or Windows Terminal.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Erik Darling",
+        "email": "erik@erikdarling.com",
+        "url": "https://erikdarling.com"
+      },
+      "homepage": "https://erikdarling.com",
+      "repository": "https://github.com/erikdarlingdata/claude-plugins",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "sessions",
+        "resume",
+        "windows",
+        "multi-agent"
+      ],
+      "tags": [
+        "sessions",
+        "resume",
+        "windows",
+        "multi-agent"
+      ]
     }
   ]
 }

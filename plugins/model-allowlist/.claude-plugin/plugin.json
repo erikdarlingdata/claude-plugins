@@ -1,0 +1,32 @@
+{
+  "name": "model-allowlist",
+  "displayName": "Model Allowlist",
+  "version": "1.0.0",
+  "description": "Refuses a subagent spawn that names a pinned model id, and enforces your own per-agent-type model rules (for example, the strongest model only when the brief gives a reason)",
+  "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },
+  "homepage": "https://erikdarling.com",
+  "repository": "https://github.com/erikdarlingdata/claude-plugins",
+  "license": "MIT",
+  "userConfig": {
+    "refuse_pinned_ids": {
+      "type": "boolean",
+      "title": "Refuse pinned model ids",
+      "description": "Refuse a subagent spawn whose model is anything but one of the allowed aliases below, such as a dated or versioned model id. Pinned ids go stale; a tier alias moves with the model line.",
+      "default": true
+    },
+    "allowed_aliases": {
+      "type": "string",
+      "multiple": true,
+      "title": "Allowed model aliases",
+      "description": "The model names a spawn may use while pinned ids are refused. A trailing [..] such as opus[1m] is ignored when matching.",
+      "default": ["opus", "sonnet", "haiku", "fable", "inherit"]
+    },
+    "rules": {
+      "type": "string",
+      "multiple": true,
+      "title": "Model rules",
+      "description": "One rule per entry, written: agent type pattern => model => brief pattern => message. When a spawn's agent type matches the first pattern and names that model (* for any model), the brief must match the brief pattern or the spawn is refused. An empty brief pattern always refuses. The message is optional and may use {type} and {model}. Patterns are case-insensitive regular expressions. Empty by default, so every model is allowed.",
+      "default": []
+    }
+  }
+}
