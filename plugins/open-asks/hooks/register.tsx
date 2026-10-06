@@ -26,7 +26,7 @@ const RULE = {
 const book = atom({ plugin: 'open-asks', key: 'book' } as const, { asks: [], nextId: 1 } as Book)
 const isHidden = atom({ plugin: 'open-asks', key: 'isHidden' } as const, false)
 
-// The session the entry belongs to: set at session.start, '' for a run that never started one.
+// The session the entry belongs to: followed by follow(), '' for a run that never started one.
 let sessionId = ''
 
 // The limits come from the plugin's options; register() sets them before any hook runs.
@@ -48,6 +48,19 @@ async function save($: EngineInterface, next: Book) {
   if (sessionId) {
     await (next.asks.length > 0 ? $.store.set(KEY_PREFIX + sessionId, next) : $.store.delete(KEY_PREFIX + sessionId)).catch(() => undefined)
   }
+}
+
+// The session id changes under a running process, and no session.start fires for it: a /clear starts a new id, and
+// a restarted session can start under a new id and then resume its old one. Follow the id before each use and load
+// what is saved under it, so a resumed session gets its open asks back and a cleared one starts empty.
+async function follow($: EngineInterface) {
+  const id = await $.session.id()
+  if (id === sessionId) {
+    return
+  }
+  sessionId = id
+  const saved = (await $.store.get(KEY_PREFIX + id).catch(() => undefined)) as Book | undefined
+  await update($, book, () => (saved && Array.isArray(saved.asks) ? saved : { asks: [], nextId: 1 }))
 }
 
 async function change($: EngineInterface, fn: (all: Book) => Book): Promise<Book> {
@@ -117,10 +130,9 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    sessionId = await $.session.id()
+    sessionId = ''
+    await follow($)
     await prune($, keepDays).catch(() => undefined)
-    const saved = (await $.store.get(KEY_PREFIX + sessionId).catch(() => undefined)) as Book | undefined
-    await update($, book, () => (saved && Array.isArray(saved.asks) ? saved : { asks: [], nextId: 1 }))
 
     await $.command.register({
       name: 'asks',
@@ -172,10 +184,27 @@ export const register: Register = (on, options) => {
     return { sections: [...composed.sections.filter(s => s.id !== RULE.id), RULE] }
   }).catch(($, e, next) => next(e))
 
+  // Observers: catch an id change (a resume, a /clear) before the band draws again.
+  on('prompt.submit', async ($, e, next) => {
+    await follow($)
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (!e.agentId) {
+      await follow($)
+    }
+
+    return done
+  }).catch(($, e, next) => next(e))
+
   on('tool.call', { tool: ADD }, async ($, e) => {
     if (e.agentId) {
       return { result: 'Subagents do not record asks: put the question in your report to the session that dispatched you.' } as never
     }
+    await follow($)
     const input = e as unknown as { text?: string; recommendation?: string; from?: string }
     const { ask, all } = await add($, input.text ?? '', input.recommendation ?? '', input.from ?? '')
     const head = ask ? `Recorded as [${ask.id}].` : 'Nothing recorded: the text was empty.'
@@ -184,6 +213,7 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', { tool: RESOLVE }, async ($, e) => {
+    await follow($)
     const input = e as unknown as { ids?: unknown }
     const { gone, all } = await resolve($, idsOf(input.ids))
     const head = gone.length > 0 ? `Resolved ${gone.map(id => `[${id}]`).join(' ')}.` : 'No open ask had those ids.'
@@ -191,9 +221,14 @@ export const register: Register = (on, options) => {
     return { result: `${head}\n${listing(all)}` } as never
   })
 
-  on('tool.call', { tool: LIST }, async $ => ({ result: listing(await read($, book)) }) as never)
+  on('tool.call', { tool: LIST }, async $ => {
+    await follow($)
+
+    return { result: listing(await read($, book)) } as never
+  })
 
   on('command.run', { command: 'asks' }, async ($, e) => {
+    await follow($)
     const [verb = '', ...rest] = e.args.trim().split(/\s+/)
     if (verb === 'done' || verb === 'drop') {
       const { gone, all } = await resolve($, idsOf(rest.join(' ')))

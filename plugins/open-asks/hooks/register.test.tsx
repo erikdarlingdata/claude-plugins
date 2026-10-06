@@ -8,6 +8,7 @@ const NOW = Date.parse('2026-10-06T15:00:00Z')
 // The engine's side: an in-memory store, a session id, quiet registrations, a band beneath that draws one row.
 const engineBottom = (on: On, initial: Record<string, unknown> = {}) => {
   const store = new Map<string, unknown>(Object.entries(initial))
+  const session = { id: 's1' }
   on('store.get', async (_$, e) => ({ value: store.get((e as unknown as { key: string }).key) }) as never)
   on('store.set', async (_$, e) => {
     const { key, value } = e as unknown as { key: string; value: unknown }
@@ -19,7 +20,9 @@ const engineBottom = (on: On, initial: Record<string, unknown> = {}) => {
     return { value: undefined } as never
   })
   on('store.keys', async () => ({ value: [...store.keys()] }) as never)
-  on('session.id', async () => ({ value: 's1' }) as never)
+  on('session.id', async () => ({ value: session.id }) as never)
+  on('prompt.submit', async (_$, e) => ({ text: e.text }) as never)
+  on('turn.complete', async (_$, e) => ({ text: e.answer }) as never)
   on('command.register', async () => ({ value: undefined }) as never)
   on('tool.register', async () => ({ value: undefined }) as never)
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
@@ -30,7 +33,7 @@ const engineBottom = (on: On, initial: Record<string, unknown> = {}) => {
   })
   mock.clock(on, { now: NOW })
 
-  return { store }
+  return { store, session }
 }
 
 const BAND = { plugin: 'open-asks', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 20 } } as const
@@ -82,6 +85,33 @@ test('a restarted session picks its asks back up from the store, and the entry g
   expect(((await $.tool.call({ tool: 'mcp__open-asks__ask_list' } as never)) as unknown as { result: string }).result).toMatch(/\[4\] Keep going\?/)
   await $.tool.call({ tool: 'mcp__open-asks__ask_resolve', ids: [4] } as never)
   expect(store.has(KEY)).toBe(false)
+})
+
+test('a restart that starts under a new id and then resumes the old one gets the old asks back; a /clear starts empty', async ($, on) => {
+  const { store, session } = engineBottom(on, { 'asks:old': { asks: [{ id: 10, text: 'Merge the PR?', recommendation: 'Yes.', from: '', addedAt: NOW }], nextId: 11 } })
+
+  // The restarted process starts under a new id, with nothing saved under it.
+  session.id = 'new'
+  await $.session.start(start)
+  expect(((await $.tool.call({ tool: 'mcp__open-asks__ask_list' } as never)) as unknown as { result: string }).result).toBe('No open asks.')
+
+  // It then takes up the old id; the next prompt brings the old asks back into the band.
+  session.id = 'old'
+  await $.prompt.submit({ text: 'hi' } as never)
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Text', text: /\[10\] Merge the PR\?/ }))?.text).toBeDefined()
+
+  // A new ask goes on after the old ones and is saved under the old id.
+  const added = (await add($, 'Cap the thread count?', { recommendation: 'Yes.' })) as { result: string }
+  expect(added.result).toMatch(/Recorded as \[11\]/)
+  expect((store.get('asks:old') as { asks: { id: number }[] }).asks.map(a => a.id)).toEqual([10, 11])
+  expect(store.has('asks:new')).toBe(false)
+
+  // A /clear moves to a fresh id: the band empties at the end of the turn.
+  session.id = 'cleared'
+  await $.turn.complete({ turnId: 't', answer: '', durationMs: 1, isAborted: false, reason: 'answer', text: '' } as never)
+  const after = await $.ui.mount(BAND)
+  expect(await after.find({ type: 'Text', text: /Waiting on you/ })).toBeUndefined()
 })
 
 test('the rule is added to the system prompt once, after the engine sections', async ($, on) => {
