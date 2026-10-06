@@ -78,6 +78,181 @@ Or add just the skill, without the marketplace:
 
 As in Claude Code, the skill is model-invoked: point Copilot at a `.sqlplan` and ask.
 
+## Claude Code mods
+
+Small hook modules for people who run several agents at once. Each one is a
+plugin of its own. Install only the ones you want, and set their options in
+`/config` (or under `pluginConfigs` in `settings.json`). They need a Claude Code
+version that loads plugin hook modules.
+
+### `subagent-fence`
+
+Stops the mistakes an unattended agent makes that cannot be taken back.
+
+```
+/plugin install subagent-fence@erikdarling
+```
+
+For the main session and every subagent it refuses four things. A force-push.
+A push to a protected branch. A git command that skips the repository's hooks.
+Killing processes by name (`pkill`, `killall`, `taskkill /IM`,
+`Stop-Process -Name`), because a name match can kill another session's
+processes.
+
+Three more guards are off until you set them. One bans folders: nothing reads,
+writes or enters them. One keeps a subagent from editing a plain git checkout,
+or running a changing git command there, so it works in its own worktree. One
+stops a subagent reading a big text file whole instead of by offset and limit.
+
+| Option | Default | What it does |
+| :- | :- | :- |
+| `guard_force_push` | on | Refuse `--force`, `--force-with-lease`, `-f` and `+refspec` pushes |
+| `guard_protected_branches` | on | Refuse a push that targets a protected branch |
+| `protected_branches` | `main`, `master`, `dev` | The branch names a push cannot target |
+| `guard_no_verify` | on | Refuse the git flag that skips hooks |
+| `guard_kill_by_name` | on | Refuse killing processes by name |
+| `banned_paths` | none | Folders that nothing reads, writes or enters |
+| `guard_shared_checkout` | off | Keep subagents out of plain git checkouts |
+| `shared_checkout_root` | empty | Limit that guard to checkouts under this folder. Empty detects a plain checkout anywhere: a folder whose `.git` is a directory, where a linked worktree has a `.git` file |
+| `read_limit_bytes` | 0 (off) | Refuse a subagent's `Read` of a text file over this size when it gives no `limit` |
+
+### `model-allowlist`
+
+Checks the model a subagent is spawned with.
+
+```
+/plugin install model-allowlist@erikdarling
+```
+
+A pinned model id goes stale: a dated or versioned name keeps pointing at an
+old model after the tier moves on. This refuses a spawn that names one and asks
+for a tier alias (`opus`, `sonnet`, `haiku`) instead. A spawn with no model is
+always allowed, because the agent file or the parent decides then.
+
+You can add rules of your own. One example: the `lane` agent runs Sonnet, and
+Opus only when the brief says design, security or hard debugging. With no rules,
+every alias is allowed.
+
+| Option | Default | What it does |
+| :- | :- | :- |
+| `refuse_pinned_ids` | on | Refuse any model that is not an allowed alias |
+| `allowed_aliases` | `opus`, `sonnet`, `haiku`, `fable`, `inherit` | The names that count as aliases. A trailing `[1m]`-style suffix is ignored |
+| `rules` | none | One rule per entry, written `agent type pattern => model => brief pattern => message` |
+
+A rule applies when the spawn's agent type matches the first pattern and it
+names that model (`*` for any model). The brief must then match the brief
+pattern, or the spawn is refused. Leave the brief pattern empty to refuse the
+pairing outright. The message is optional and can use `{type}` and `{model}`.
+Patterns are case-insensitive regular expressions. A rule that does not parse
+is skipped. For example:
+
+```
+^(lane|worker-.*)$ => opus => \b(design|security|hard[- ]debug) => {type} runs sonnet; name the reason in the brief to use opus.
+```
+
+### `seat-resume`
+
+Brings interrupted sessions back after a crash, a reboot or a closed terminal.
+
+```
+/plugin install seat-resume@erikdarling
+```
+
+The plugin writes one small file per interactive session: its id, name, folder,
+permission mode and last activity. It marks the file when the session ends.
+`/resume-sessions` lists the sessions that died or were interrupted in the last
+72 hours, with the command that reopens each. The script's `-Launch` switch
+reopens all of them in terminal tabs. Sessions you left with `/exit`, Ctrl+C or
+`/clear` stay closed. The plugin name still says "seat", but everything you see
+says "session".
+
+This one is Windows only. The bundled script (`scripts/resume-sessions.ps1`) is
+PowerShell. It compares Windows process start times to tell a live session from
+a reused process id. It reopens tabs in [WezTerm](https://wezterm.org) or
+Windows Terminal. Nobody has tried the plugin on macOS or Linux.
+
+| Option | Default | What it does |
+| :- | :- | :- |
+| `registry_dir` | empty: `session-registry` in your Claude config folder | Where the per-session files go |
+| `sessions_dir` | empty: `sessions` in your Claude config folder | Where Claude Code records its running sessions |
+| `resume_script` | empty: the bundled script | The PowerShell script `/resume-sessions` runs |
+| `powershell` | `pwsh` | The program that runs it (`powershell` for Windows PowerShell 5.1) |
+| `terminal` | `wezterm` | `wezterm` or `windows-terminal`: where `-Launch` reopens sessions |
+
+The Claude config folder is `CLAUDE_CONFIG_DIR` when that is set, otherwise
+`.claude` in your home folder.
+
+### `open-asks`
+
+Keeps the questions Claude asks you from scrolling away. Every time a reply asks you something or
+leaves a decision to you, Claude records it. The question stays in a band above your prompt, with
+Claude's recommended answer, until you answer, decline or drop it. Claude gets `ask_add`, `ask_resolve`
+and `ask_list` tools. You get `/asks` (`done <ids>`, `clear`, `hide`, `show`). Open asks are saved per
+session, so a resumed session still has them.
+
+```
+/plugin install open-asks@erikdarling
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `maxBandAsks` | 6 | Most asks the band draws. The rest stay in `/asks`. |
+| `maxQuestionChars` | 400 | Longest question or recommendation shown before it is cut. |
+| `keepDays` | 30 | Saved asks from other sessions are removed after this many days. 0 keeps them. |
+
+### `subagent-band`
+
+A live view of your subagents. The band above the prompt has one row per running subagent: type,
+model, effort, steps, context size, advisor calls and estimated cost. `/fleet` opens a pane with every
+subagent of the session, finished ones included. `/subagent-cost` totals the estimated cost by agent
+type and by issue number in the description, with the main session's own cost. `/steer <id> <text>`
+sends a running subagent a message. Claude gets a cheap `subagent_vitals` tool, so it does not have
+to read output files to check progress. Costs are list-price estimates, not your bill.
+
+```
+/plugin install subagent-band@erikdarling
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `priceTable` | `opus:5:25, sonnet:3:15, haiku:1:5` | Input and output USD per million tokens for each model family. A model id is matched by containing the family name. |
+| `cacheWriteMultiplier` | 1.25 | Cache write price as a multiple of the input price. |
+| `cacheReadMultiplier` | 0.1 | Cache read price as a multiple of the input price. |
+
+### `usage-budget`
+
+Watches the account's 5-hour and 7-day usage windows. A toast tells you each time a window crosses a
+percent. Past a higher percent, Claude also gets a one-time note so it can stop starting optional work
+and write its handoff. Past the last one, new subagents are refused until the window resets.
+
+```
+/plugin install usage-budget@erikdarling
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `warnPercents` | `70, 85, 95` | Percents that raise a toast, once each per window. |
+| `tellModelAtPercent` | 85 | From here the model is told as well. 0 never tells it. |
+| `spawnGatePercent` | 95 | A new subagent is refused when either window is at or past this. 0 turns the refusal off. |
+
+### `subagent-wall`
+
+A wall-clock limit for subagents. After a warning time, a subagent is told to finish up. After the
+limit, it can only run `git` and `gh` commands and write `.md` or `.txt` files. It commits, reports
+and ends instead of running on. It also nudges a code-changing subagent that has a lot of context
+but no edited file to stop exploring and make the change. The main session is never limited.
+
+```
+/plugin install subagent-wall@erikdarling
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `warnMinutes` | 45 | Minutes before a subagent is told to finish up. 0 turns the warning off. |
+| `limitMinutes` | 60 | Minutes before it is held to `git`, `gh` and note writes. 0 turns the limit off. |
+| `noEditNudgeK` | 100 | Thousands of context tokens before the no-edit nudge. 0 turns it off. |
+| `codeAgentTypes` | `general-purpose` | Comma-separated subagent types that get the no-edit nudge. |
+
 ## pi
 
 This repository is also a [pi package](https://pi.dev/packages): the root
@@ -154,86 +329,6 @@ Token-budget guardrails for multi-agent setups, built after an overnight orchest
 The wall is deliberately **not** auto-loaded, because it would wall off your interactive session too. See
 [`plugins/pi-subagent-guardrails/README.md`](plugins/pi-subagent-guardrails/README.md) for install and the
 recommended watchdog and pi-subagents settings.
-
-## Claude Code mods for running several agents at once
-
-set limits. Each installs with one line. You change an option in the
-plugin's config menu (`/plugin`), and the mod reloads with the new value.
-plugin's config menu (`/plugin`) and the mod reloads with the new value.
-
-### `open-asks`
-
-Keeps the questions Claude asks you from scrolling away. Every time a reply asks you something or
-leaves a decision to you, Claude records it. The question stays in a band above your prompt, with
-Claude's recommended answer, until you answer, decline or drop it. Claude gets `ask_add`, `ask_resolve`
-and `ask_list` tools. You get `/asks` (`done <ids>`, `clear`, `hide`, `show`). Open asks are saved per
-session, so a resumed session still has them.
-
-```
-/plugin install open-asks@erikdarling
-```
-
-| Option | Default | What it does |
-| --- | --- | --- |
-| `maxBandAsks` | 6 | Most asks the band draws. The rest stay in `/asks`. |
-| `maxQuestionChars` | 400 | Longest question or recommendation shown before it is cut. |
-| `keepDays` | 30 | Saved asks from other sessions are removed after this many days. 0 keeps them. |
-
-### `subagent-band`
-
-A live view of your subagents. The band above the prompt has one row per running subagent: type,
-model, effort, steps, context size, advisor calls and estimated cost. `/fleet` opens a pane with every
-subagent of the session, finished ones included. `/subagent-cost` totals the estimated cost by agent
-type and by issue number in the description, with the main session's own cost.
-
-`/steer <id> <text>`
-sends a running subagent a message. Claude gets a cheap `subagent_vitals` tool, so it does not have
-to read output files to check progress. Costs are list-price estimates, not your bill.
-
-```
-/plugin install subagent-band@erikdarling
-```
-
-| Option | Default | What it does |
-| --- | --- | --- |
-| `priceTable` | `opus:5:25, sonnet:3:15, haiku:1:5` | Input and output USD per million tokens for each model family. A model id is matched by containing the family name. |
-| `cacheWriteMultiplier` | 1.25 | Cache write price as a multiple of the input price. |
-| `cacheReadMultiplier` | 0.1 | Cache read price as a multiple of the input price. |
-
-### `usage-budget`
-
-Watches the account's 5-hour and 7-day usage windows. A toast tells you each time a window crosses a
-percent. Past a higher percent, Claude also gets a one-time note so it can stop starting optional work
-and write its handoff. Past the last one, new subagents are refused until the window resets.
-
-```
-/plugin install usage-budget@erikdarling
-```
-
-| Option | Default | What it does |
-| --- | --- | --- |
-| `warnPercents` | `70, 85, 95` | Percents that raise a toast, once each per window. |
-| `tellModelAtPercent` | 85 | From here the model is told as well. 0 never tells it. |
-| `spawnGatePercent` | 95 | A new subagent is refused when either window is at or past this. 0 turns the refusal off. |
-
-### `subagent-wall`
-
-A wall-clock limit for subagents. After a warning time, a subagent is told to finish up. After the
-limit, it can only run `git` and `gh` commands and write `.md` or `.txt` files. It commits, reports
-and ends instead of running on. It also nudges a code-changing subagent that has a lot of context
-but no edited file to stop exploring and make the change. The main session is never
-limited.
-
-```
-/plugin install subagent-wall@erikdarling
-```
-
-| Option | Default | What it does |
-| --- | --- | --- |
-| `warnMinutes` | 45 | Minutes before a subagent is told to finish up. 0 turns the warning off. |
-| `limitMinutes` | 60 | Minutes before it is held to `git`, `gh` and note writes. 0 turns the limit off. |
-| `noEditNudgeK` | 100 | Thousands of context tokens before the no-edit nudge. 0 turns it off. |
-| `codeAgentTypes` | `general-purpose` | Comma-separated subagent types that get the no-edit nudge. |
 
 ## Not a plugin: the pi setup guide
 

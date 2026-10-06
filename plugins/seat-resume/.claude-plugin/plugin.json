@@ -1,0 +1,44 @@
+{
+  "name": "seat-resume",
+  "displayName": "Session Resume",
+  "version": "1.0.0",
+  "description": "Keeps a registry of interactive sessions so /resume-sessions can list and reopen the ones a crash, reboot or closed terminal interrupted (Windows, PowerShell, WezTerm or Windows Terminal)",
+  "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },
+  "homepage": "https://erikdarling.com",
+  "repository": "https://github.com/erikdarlingdata/claude-plugins",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "registry_dir": {
+      "type": "string",
+      "title": "Registry folder",
+      "description": "Where the plugin writes one small JSON file per interactive session. Leave empty for session-registry inside your Claude config folder (CLAUDE_CONFIG_DIR, else the .claude folder in your home folder).",
+      "default": ""
+    },
+    "sessions_dir": {
+      "type": "string",
+      "title": "Claude Code sessions folder",
+      "description": "The folder where Claude Code itself records each running session (one <pid>.json per session). Leave empty for sessions inside your Claude config folder.",
+      "default": ""
+    },
+    "resume_script": {
+      "type": "string",
+      "title": "Resume script",
+      "description": "Path to the PowerShell script that lists and reopens sessions. Leave empty to use the one bundled with the plugin.",
+      "default": ""
+    },
+    "powershell": {
+      "type": "string",
+      "title": "PowerShell program",
+      "description": "The program that runs the resume script: pwsh (PowerShell 7) or powershell (Windows PowerShell 5.1).",
+      "default": "pwsh"
+    },
+    "terminal": {
+      "type": "string",
+      "title": "Terminal for reopening",
+      "description": "The terminal the script's -Launch option opens each session in, one tab per session.",
+      "options": ["wezterm", "windows-terminal"],
+      "default": "wezterm"
+    }
+  }
+}
