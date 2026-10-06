@@ -184,7 +184,9 @@ session, so a resumed session still has them.
 A live view of your subagents. The band above the prompt has one row per running subagent: type,
 model, effort, steps, context size, advisor calls and estimated cost. `/fleet` opens a pane with every
 subagent of the session, finished ones included. `/subagent-cost` totals the estimated cost by agent
-type and by issue number in the description, with the main session's own cost. `/steer <id> <text>`
+type and by issue number in the description, with the main session's own cost.
+
+`/steer <id> <text>`
 sends a running subagent a message. Claude gets a cheap `subagent_vitals` tool, so it does not have
 to read output files to check progress. Costs are list-price estimates, not your bill.
 
