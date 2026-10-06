@@ -1,0 +1,31 @@
+{
+  "name": "usage-budget",
+  "version": "1.0.0",
+  "description": "Warns as the account's 5-hour and 7-day usage windows fill, tells the model as they near the limit, and refuses new subagents past a set percent",
+  "types": "./types/index.d.ts",
+  "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },
+  "homepage": "https://erikdarling.com",
+  "repository": "https://github.com/erikdarlingdata/claude-plugins",
+  "license": "MIT",
+  "keywords": ["claude-code", "usage", "rate-limits", "subagents", "budget"],
+  "userConfig": {
+    "spawnGatePercent": {
+      "type": "number",
+      "title": "Refuse new subagents at (percent)",
+      "description": "When either usage window reaches this percent, a new subagent spawn is refused. 0 turns the refusal off.",
+      "default": 95
+    },
+    "warnPercents": {
+      "type": "string",
+      "title": "Warn at (percents, comma separated)",
+      "description": "Each time a usage window first reaches one of these percents, you get a toast. It starts over when the window resets.",
+      "default": "70, 85, 95"
+    },
+    "tellModelAtPercent": {
+      "type": "number",
+      "title": "Tell the model from (percent)",
+      "description": "From this percent on, the model also gets a one-time note on its next tool result, so it can wrap up. 0 never tells the model.",
+      "default": 85
+    }
+  }
+}

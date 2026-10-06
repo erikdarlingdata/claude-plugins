@@ -155,6 +155,84 @@ The wall is deliberately **not** auto-loaded, because it would wall off your int
 [`plugins/pi-subagent-guardrails/README.md`](plugins/pi-subagent-guardrails/README.md) for install and the
 recommended watchdog and pi-subagents settings.
 
+## Claude Code mods for running several agents at once
+
+set limits. Each installs with one line. You change an option in the
+plugin's config menu (`/plugin`), and the mod reloads with the new value.
+plugin's config menu (`/plugin`) and the mod reloads with the new value.
+
+### `open-asks`
+
+Keeps the questions Claude asks you from scrolling away. Every time a reply asks you something or
+leaves a decision to you, Claude records it. The question stays in a band above your prompt, with
+Claude's recommended answer, until you answer, decline or drop it. Claude gets `ask_add`, `ask_resolve`
+and `ask_list` tools. You get `/asks` (`done <ids>`, `clear`, `hide`, `show`). Open asks are saved per
+session, so a resumed session still has them.
+
+```
+/plugin install open-asks@erikdarling
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `maxBandAsks` | 6 | Most asks the band draws. The rest stay in `/asks`. |
+| `maxQuestionChars` | 400 | Longest question or recommendation shown before it is cut. |
+| `keepDays` | 30 | Saved asks from other sessions are removed after this many days. 0 keeps them. |
+
+### `subagent-band`
+
+A live view of your subagents. The band above the prompt has one row per running subagent: type,
+model, effort, steps, context size, advisor calls and estimated cost. `/fleet` opens a pane with every
+subagent of the session, finished ones included. `/subagent-cost` totals the estimated cost by agent
+type and by issue number in the description, with the main session's own cost. `/steer <id> <text>`
+sends a running subagent a message. Claude gets a cheap `subagent_vitals` tool, so it does not have
+to read output files to check progress. Costs are list-price estimates, not your bill.
+
+```
+/plugin install subagent-band@erikdarling
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `priceTable` | `opus:5:25, sonnet:3:15, haiku:1:5` | Input and output USD per million tokens for each model family. A model id is matched by containing the family name. |
+| `cacheWriteMultiplier` | 1.25 | Cache write price as a multiple of the input price. |
+| `cacheReadMultiplier` | 0.1 | Cache read price as a multiple of the input price. |
+
+### `usage-budget`
+
+Watches the account's 5-hour and 7-day usage windows. A toast tells you each time a window crosses a
+percent. Past a higher percent, Claude also gets a one-time note so it can stop starting optional work
+and write its handoff. Past the last one, new subagents are refused until the window resets.
+
+```
+/plugin install usage-budget@erikdarling
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `warnPercents` | `70, 85, 95` | Percents that raise a toast, once each per window. |
+| `tellModelAtPercent` | 85 | From here the model is told as well. 0 never tells it. |
+| `spawnGatePercent` | 95 | A new subagent is refused when either window is at or past this. 0 turns the refusal off. |
+
+### `subagent-wall`
+
+A wall-clock limit for subagents. After a warning time, a subagent is told to finish up. After the
+limit, it can only run `git` and `gh` commands and write `.md` or `.txt` files. It commits, reports
+and ends instead of running on. It also nudges a code-changing subagent that has a lot of context
+but no edited file to stop exploring and make the change. The main session is never
+limited.
+
+```
+/plugin install subagent-wall@erikdarling
+```
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `warnMinutes` | 45 | Minutes before a subagent is told to finish up. 0 turns the warning off. |
+| `limitMinutes` | 60 | Minutes before it is held to `git`, `gh` and note writes. 0 turns the limit off. |
+| `noEditNudgeK` | 100 | Thousands of context tokens before the no-edit nudge. 0 turns it off. |
+| `codeAgentTypes` | `general-purpose` | Comma-separated subagent types that get the no-edit nudge. |
+
 ## Not a plugin: the pi setup guide
 
 [`pi-setup-guide.md`](pi-setup-guide.md) — a distilled ~15-minute setup for

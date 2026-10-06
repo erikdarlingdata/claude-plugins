@@ -1,0 +1,31 @@
+{
+  "name": "open-asks",
+  "version": "1.0.0",
+  "description": "A band above the prompt listing each question the session is waiting on from the person, with the recommended answer, trimmed as each is answered; ask_add / ask_resolve / ask_list tools for the model and an /asks command",
+  "types": "./types/index.d.ts",
+  "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },
+  "homepage": "https://erikdarling.com",
+  "repository": "https://github.com/erikdarlingdata/claude-plugins",
+  "license": "MIT",
+  "keywords": ["claude-code", "questions", "decisions", "status-band"],
+  "userConfig": {
+    "maxBandAsks": {
+      "type": "number",
+      "title": "Most asks the band shows",
+      "description": "The band shows the newest asks that fit, up to this many, and points at /asks for the rest.",
+      "default": 6
+    },
+    "maxQuestionChars": {
+      "type": "number",
+      "title": "Longest question or recommendation shown (characters)",
+      "description": "Longer text is cut with an ellipsis in the band and in listings. At least 40.",
+      "default": 400
+    },
+    "keepDays": {
+      "type": "number",
+      "title": "Forget a session's unanswered asks after (days)",
+      "description": "Asks are saved per session so a resumed session keeps them. When a session starts, saved asks of other sessions whose newest ask is older than this are removed. 0 keeps them for ever.",
+      "default": 30
+    }
+  }
+}

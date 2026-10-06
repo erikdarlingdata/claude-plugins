@@ -48,6 +48,122 @@
         "tsql",
         "dba"
       ]
+    },
+    {
+      "name": "open-asks",
+      "displayName": "Open Asks",
+      "source": "./plugins/open-asks",
+      "description": "A band above the prompt listing each question the session is waiting on from you, with the recommended answer, trimmed as each is answered. Adds ask_add, ask_resolve and ask_list tools for the model and an /asks command.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Erik Darling",
+        "email": "erik@erikdarling.com",
+        "url": "https://erikdarling.com"
+      },
+      "homepage": "https://erikdarling.com",
+      "repository": "https://github.com/erikdarlingdata/claude-plugins",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "claude-code",
+        "questions",
+        "decisions",
+        "status-band"
+      ],
+      "tags": [
+        "claude-code",
+        "questions",
+        "decisions",
+        "status-band"
+      ]
+    },
+    {
+      "name": "subagent-band",
+      "displayName": "Subagent Band",
+      "source": "./plugins/subagent-band",
+      "description": "A band above the prompt with each running subagent's type, model, effort, steps, context, advisor calls and estimated cost, plus a /fleet pane, /steer, /subagent-cost and a subagent_vitals tool.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Erik Darling",
+        "email": "erik@erikdarling.com",
+        "url": "https://erikdarling.com"
+      },
+      "homepage": "https://erikdarling.com",
+      "repository": "https://github.com/erikdarlingdata/claude-plugins",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "claude-code",
+        "subagents",
+        "cost",
+        "fleet",
+        "status-band"
+      ],
+      "tags": [
+        "claude-code",
+        "subagents",
+        "cost",
+        "fleet",
+        "status-band"
+      ]
+    },
+    {
+      "name": "usage-budget",
+      "displayName": "Usage Budget",
+      "source": "./plugins/usage-budget",
+      "description": "Warns as the account's 5-hour and 7-day usage windows fill, tells the model as they near the limit, and refuses new subagents past a set percent.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Erik Darling",
+        "email": "erik@erikdarling.com",
+        "url": "https://erikdarling.com"
+      },
+      "homepage": "https://erikdarling.com",
+      "repository": "https://github.com/erikdarlingdata/claude-plugins",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "claude-code",
+        "usage",
+        "rate-limits",
+        "subagents",
+        "budget"
+      ],
+      "tags": [
+        "claude-code",
+        "usage",
+        "rate-limits",
+        "subagents",
+        "budget"
+      ]
+    },
+    {
+      "name": "subagent-wall",
+      "displayName": "Subagent Wall",
+      "source": "./plugins/subagent-wall",
+      "description": "A wall-clock limit for subagents (a warning, then only git, gh and .md/.txt writes) and a nudge for a code-changing subagent that has used a lot of context without editing a file.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Erik Darling",
+        "email": "erik@erikdarling.com",
+        "url": "https://erikdarling.com"
+      },
+      "homepage": "https://erikdarling.com",
+      "repository": "https://github.com/erikdarlingdata/claude-plugins",
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "claude-code",
+        "subagents",
+        "guardrails",
+        "time-limit"
+      ],
+      "tags": [
+        "claude-code",
+        "subagents",
+        "guardrails",
+        "time-limit"
+      ]
     }
   ]
 }
