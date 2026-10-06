@@ -1,0 +1,31 @@
+{
+  "name": "subagent-band",
+  "version": "1.0.0",
+  "description": "A band above the prompt with each running subagent's type, model, effort, steps, context, advisor calls and estimated cost; a /fleet pane, /steer, /subagent-cost, and a subagent_vitals tool for the model",
+  "types": "./types/index.d.ts",
+  "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },
+  "homepage": "https://erikdarling.com",
+  "repository": "https://github.com/erikdarlingdata/claude-plugins",
+  "license": "MIT",
+  "keywords": ["claude-code", "subagents", "cost", "fleet", "status-band"],
+  "userConfig": {
+    "priceTable": {
+      "type": "string",
+      "title": "Model prices per million tokens",
+      "description": "Comma-separated family:input:output in USD, such as opus:4:20, sonnet:2:10, haiku:1:5, fable:10:50. A model id is matched by containing the family name; one that matches none is priced as the first entry. Used for the cost estimates only.",
+      "default": "opus:4:20, sonnet:2:10, haiku:1:5, fable:10:50"
+    },
+    "cacheWriteMultiplier": {
+      "type": "number",
+      "title": "Cache write price (times the input price)",
+      "description": "What a prompt-cache write costs relative to input tokens.",
+      "default": 1.25
+    },
+    "cacheReadMultiplier": {
+      "type": "number",
+      "title": "Cache read price (times the input price)",
+      "description": "What a prompt-cache read costs relative to input tokens.",
+      "default": 0.1
+    }
+  }
+}

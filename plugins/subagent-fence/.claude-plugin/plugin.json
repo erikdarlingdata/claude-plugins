@@ -1,0 +1,69 @@
+{
+  "name": "subagent-fence",
+  "displayName": "Subagent Fence",
+  "version": "1.0.0",
+  "description": "Refuses force-pushes, pushes to protected branches, --no-verify and kills by process name; optionally fences off listed paths, a subagent's edits to a shared checkout and its whole-file reads of large files",
+  "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },
+  "homepage": "https://erikdarling.com",
+  "repository": "https://github.com/erikdarlingdata/claude-plugins",
+  "license": "MIT",
+  "userConfig": {
+    "guard_force_push": {
+      "type": "boolean",
+      "title": "Refuse force-pushes",
+      "description": "Refuse git push --force, --force-with-lease, -f and +refspec pushes, for the main session and subagents alike.",
+      "default": true
+    },
+    "guard_protected_branches": {
+      "type": "boolean",
+      "title": "Refuse pushes to protected branches",
+      "description": "Refuse a git push whose target is one of the protected branches below.",
+      "default": true
+    },
+    "protected_branches": {
+      "type": "string",
+      "multiple": true,
+      "title": "Protected branches",
+      "description": "Branch names a push may not target (for example main, master, dev).",
+      "default": ["main", "master", "dev"]
+    },
+    "guard_no_verify": {
+      "type": "boolean",
+      "title": "Refuse git --no-verify",
+      "description": "Refuse any git command that passes --no-verify, which skips the repository's hooks.",
+      "default": true
+    },
+    "guard_kill_by_name": {
+      "type": "boolean",
+      "title": "Refuse killing processes by name",
+      "description": "Refuse pkill, killall, taskkill /IM and Stop-Process -Name, which can kill another session's processes. Kill by PID instead.",
+      "default": true
+    },
+    "banned_paths": {
+      "type": "string",
+      "multiple": true,
+      "title": "Banned paths",
+      "description": "Folders that may never be read, written or entered, by the main session or a subagent. Empty by default.",
+      "default": []
+    },
+    "guard_shared_checkout": {
+      "type": "boolean",
+      "title": "Keep subagents out of shared checkouts",
+      "description": "Refuse a subagent's edits and mutating git commands in a plain git checkout (one whose .git is a folder), so it works in its own worktree instead. Off by default, because it also stops a subagent working in your only checkout.",
+      "default": false
+    },
+    "shared_checkout_root": {
+      "type": "string",
+      "title": "Shared checkout root",
+      "description": "Only treat checkouts under this folder as shared. Leave empty to detect a shared checkout anywhere: any folder whose .git is a directory, not the .git file a linked worktree has.",
+      "default": ""
+    },
+    "read_limit_bytes": {
+      "type": "number",
+      "title": "Whole-file read limit (bytes)",
+      "description": "Refuse a subagent's Read of a text file larger than this when the call gives no limit, so it reads by offset and limit instead. 0 turns the check off.",
+      "default": 0,
+      "min": 0
+    }
+  }
+}
