@@ -31,7 +31,7 @@ reloading their parent session.
 | `bang-notify.ts` | Wake Pi when a contextual `!` command finishes; learn command completions | `~/.pi/agent/bang-notify.json`; history in `bang-history.json` |
 | `settle-bell.ts` | Ring BEL on `agent_settled` | Configure the terminal's bell/attention behavior |
 | `refusal-fallback.ts` | Retry an approved false-positive provider refusal on another model | Edit constants in the source |
-| `subagent-cost.ts` | Session and subagent spend: footer chip by agent type and thinking level, machine-wide ledger, `/subagent-cost` reports | `/subagent-cost [types\|agents\|sessions\|issues] [session\|today\|week\|<N>d]`; ledger in `~/.pi/agent/subagent-ledger/` |
+| `subagent-cost.ts` | Session and subagent spend: footer chip by agent type and thinking level, machine-wide ledger, `/subagent-cost` reports | `/subagent-cost [types\|agents\|sessions\|issues\|daily] [session\|today\|week\|<N>d\|<N>h] [session:<name\|id\|this\|all>]`; ledger in `~/.pi/agent/subagent-ledger/` |
 
 ## subagent-cost.ts
 
@@ -63,10 +63,34 @@ on, so the two figures do not overlap.
 model, with the session's own spend as `seat` rows and an average cost per
 agent. Add `agents` for the most expensive agents, `sessions` for each
 session's own and agent spend, or `issues` for agent spend per issue or PR
-number (the first `#123` in an agent's description; repos are not told apart). Add `today`, `week` or `<N>d` to read the ledger and cover every pi
-session on the machine. Every view has a `time` column: the sum of gaps between
-an agent's messages, each capped at 10 minutes, so idle time between resumes is
-not counted.
+number (the first `#123` in an agent's description; repos are not told apart).
+Every view has a `time` column: the sum of gaps between an agent's messages,
+each capped at 10 minutes, so idle time between resumes is not counted.
+
+**Ranges.** A range reads the ledger, so it covers every pi session on the
+machine. `today` starts at local midnight. `<N>h` is a rolling window ending
+now, and so is `<N>d` in the totals views (`types`, `agents`, `sessions`,
+`issues`).
+
+**Per day.** A range with no view gives one row per local day: seat spend,
+agent spend, agents, sessions, messages and total. Here `<N>d` is today and the
+N−1 whole days before it. `session:<x>` limits the range to sessions whose name
+is or contains `<x>`, whose id starts with `<x>`, or this session (`this`), and
+splits each day by type, thinking level and model. `session:all` splits each
+day by session. Without a range, a filter covers 7 days. A day lists its top 10
+rows and folds the rest into one line.
+
+```
+/subagent-cost 7d                    # total per day, every session
+/subagent-cost session:all 3d        # per day, per session
+/subagent-cost session:pm-worker 7d  # one session, per day, per model
+/subagent-cost types week            # one total per type/thinking/model
+```
+
+**Incomplete data.** A session that has not loaded this version records nothing
+live; its spend reaches the ledger only through the backfill. When a session in
+the range has written to its session file more than 10 minutes after its last
+ledger line, the report ends with an `Incomplete:` line naming it.
 
 **Ledger.** One JSON line per message in
 `~/.pi/agent/subagent-ledger/YYYY-MM-DD.jsonl` (UTC day): `ts`, `sessionId`,
@@ -87,6 +111,17 @@ or seat's messages are skipped once the live extension has a line for it, so it
 is safe to run at any time. Nested
 agents are not saved and cannot be recovered, and neither is the thinking level
 an agent asked for.
+
+Live sessions keep appending while it runs (25–75 s on a few thousand
+sessions). It keeps those lines: before swapping each day file it copies what
+was appended since its first read, and afterwards it copies anything a writer
+put in the old file during the swap. Earlier versions dropped them. One run at a
+time (a lock on `.backfill.lock`; a second run exits 0), and each finished run
+touches `.last-backfill`, which the `Incomplete:` note quotes.
+
+To run it hourly on macOS, a launchd agent with `StartCalendarInterval`
+`Minute` 7, `Nice` 10 and `LowPriorityIO` works; on Linux, a cron line or a
+systemd timer.
 
 ## Safety notes
 

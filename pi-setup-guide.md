@@ -672,7 +672,8 @@ Available recipes:
 - `refusal-fallback.ts` — advanced, policy-sensitive automatic fallback
 - `subagent-cost.ts` — subagent spend in the footer by type and thinking level,
   a machine-wide ledger of every session's own spend and its agents', and
-  `/subagent-cost` reports by type, agent, session or issue over any day range. Needs a pi-subagents build with the `subagents:usage`
+  `/subagent-cost` reports by type, agent, session, issue or day, for one
+  session or all of them. Needs a pi-subagents build with the `subagents:usage`
   event (see the recipe README). `recipes/scripts/subagent-ledger-backfill.py`
   rebuilds the ledger from saved subagent sessions.
 
