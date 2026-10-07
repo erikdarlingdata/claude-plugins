@@ -35,16 +35,25 @@
  * record its own messages as a seat. The footer chip stays agents-only; the
  * session's own spend is already pi's `$`.
  *
- * Command: /subagent-cost [view] [range]
- *   view:  types (default) | agents | sessions | issues
- *   range: session (default; sessions view defaults to today) | today | week | <N>d
- *   Ranges other than "session" read the ledger, so they cover every pi
- *   session on this machine, from the day the ledger started.
+ * Command: /subagent-cost [view] [range] [session:<name|id prefix|this>]
+ *   view:  types (default) | agents | sessions | issues | daily
+ *   range: session (default) | today (since local midnight) | week | <N>d | <N>h
+ *          <N>d and <N>h are rolling windows ending now.
+ *   session:<x> limits a ledger range to sessions whose name is <x> (or
+ *   contains it), whose id starts with <x>, or this session ("this"); with a
+ *   filter the default range is 7d. Any ledger range defaults to the daily
+ *   view, one row per local day (<N>d = today and the N-1 whole days before
+ *   it); session:<x> splits each day by model, and
+ *   session:all splits each day by session (top DAILY_TOP_N rows a day). Add
+ *   `types` for one total per type/thinking/model instead. Ledger ranges cover every pi session on this machine,
+ *   from the day the ledger started; a note lists sessions whose recent spend
+ *   is not in the ledger yet (not reloaded since seat tracking, and not yet
+ *   backfilled).
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -52,10 +61,15 @@ const STATUS_KEY = "subagent-usage";
 const ENTRY_TYPE = "subagent-cost";
 const FOOTER_TOP_N = 4;
 const AGENTS_TOP_N = 15;
+const DAILY_TOP_N = 10;
 const FLUSH_INTERVAL_MS = 2 * 60 * 1000;
 const IDLE_CAP_MS = 10 * 60 * 1000;
 const SEAT_OWNER_KEY = Symbol.for("subagent-cost:seat-owner");
-const LEDGER_DIR = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "subagent-ledger");
+const AGENT_DIR = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+const LEDGER_DIR = join(AGENT_DIR, "subagent-ledger");
+const SESSIONS_DIR = join(AGENT_DIR, "sessions");
+/** A session file written this long after its last ledger line is treated as missing spend. */
+const STALE_SLACK_MS = 10 * 60 * 1000;
 
 type UsageEvent = {
 	id?: string;
@@ -487,6 +501,111 @@ function issuesView(l: Ledger, title: string, topN = AGENTS_TOP_N): string {
 	].join("\n");
 }
 
+/** Local calendar day, YYYY-MM-DD. */
+function localDay(ms: number): string {
+	const d = new Date(ms);
+	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function tzName(): string {
+	try {
+		return new Intl.DateTimeFormat("en-US", { timeZoneName: "short" }).formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value ?? "local";
+	} catch {
+		return "local";
+	}
+}
+
+type DailyBy = "day" | "model" | "session";
+
+/**
+ * Spend per local day, newest first, every day in the range listed.
+ * by "day": one row per day. "model": rows per type/thinking/model.
+ * "session": rows per session.
+ */
+function dailyView(lines: Line[], title: string, since: number, by: DailyBy, now = Date.now()): string {
+	const days = new Map<string, Ledger>();
+	for (const l of lines) {
+		const day = localDay(Date.parse(l.ts));
+		let d = days.get(day);
+		if (!d) days.set(day, (d = new Ledger()));
+		d.add(l);
+	}
+	if (days.size === 0) return `${title}: no spend recorded.`;
+	const allDays: string[] = [];
+	for (let t = now; ; t -= 86_400_000) {
+		const day = localDay(t);
+		if (allDays.at(-1) !== day) allDays.push(day);
+		if (day <= localDay(since)) break;
+	}
+	let total = 0;
+	let seat = 0;
+	for (const d of days.values()) {
+		total += d.total();
+		seat += d.seatTotal();
+	}
+	const head = `${title}: ${formatUsd(total)} = seats ${formatUsd(seat)} + agents ${formatUsd(total - seat)}`;
+
+	if (by === "day") {
+		const body = allDays.map((day) => {
+			const d = days.get(day);
+			if (!d) return [day, "$0", "$0", "0", "0", "0", "$0"];
+			let msgs = 0;
+			for (const b of d.buckets.values()) msgs += b.messages;
+			return [day, formatUsd(d.seatTotal()), formatUsd(d.total() - d.seatTotal()), `${d.agents.size}`, `${d.sessions.size}`, `${msgs}`, formatUsd(d.total())];
+		});
+		return [head, ...table(["day", "seats", "agents", "# agents", "sessions", "msgs", "total"], body, [1, 2, 3, 4, 5, 6])].join("\n");
+	}
+
+	const body: string[][] = [];
+	const cols = by === "model" ? 8 : 7;
+	const blank = (day: string) => [day, "-", ...Array(cols - 3).fill(""), "$0"];
+	for (const day of allDays) {
+		const d = days.get(day);
+		if (!d) {
+			body.push(blank(day));
+			continue;
+		}
+		let rows: string[][];
+		let restCount = 0;
+		let restCost = 0;
+		if (by === "model") {
+			const sorted = [...d.buckets.values()].sort((a, b) => b.cost - a.cost);
+			rows = sorted.slice(0, DAILY_TOP_N).map((b) => [
+				b.type,
+				thinkingLabel(b.thinking, b.asked),
+				b.model.replace(/^openrouter\/~?/, ""),
+				b.type === "seat" ? "-" : `${b.agents.size}`,
+				`${b.messages}`,
+				formatDuration(b.activeMs),
+				formatUsd(b.cost),
+			]);
+			restCount = Math.max(0, sorted.length - DAILY_TOP_N);
+			for (const b of sorted.slice(DAILY_TOP_N)) restCost += b.cost;
+		} else {
+			const sorted = [...d.sessions.values()].sort((a, b) => b.cost - a.cost);
+			rows = sorted.slice(0, DAILY_TOP_N).map((x) => [
+				x.name || `(unnamed ${x.sessionId.slice(0, 8)})`,
+				formatUsd(x.seatCost),
+				formatUsd(x.agentCost),
+				`${x.agents.size}`,
+				formatDuration(x.seatMs + x.agentMs),
+				formatUsd(x.cost),
+			]);
+			restCount = Math.max(0, sorted.length - DAILY_TOP_N);
+			for (const x of sorted.slice(DAILY_TOP_N)) restCost += x.cost;
+		}
+		rows.forEach((r, i) => body.push([i === 0 ? day : "", ...r]));
+		if (restCount) body.push(["", `+${restCount} more`, ...Array(cols - 3).fill(""), formatUsd(restCost)]);
+		if (rows.length > 1) body.push(["", "day total", ...Array(cols - 3).fill(""), formatUsd(d.total())]);
+	}
+	const header =
+		by === "model"
+			? ["day", "type", "thinking", "model", "agents", "msgs", "time", "cost"]
+			: ["day", "session", "seat", "agents", "#", "time", "total"];
+	const right = by === "model" ? [4, 5, 6, 7] : [2, 3, 4, 5, 6];
+	return [head, ...table(header, body, right)].join("\n");
+}
+
 // ---------- ledger file ----------
 
 const utcDay = (d: Date) => d.toISOString().slice(0, 10);
@@ -501,14 +620,14 @@ function appendLedger(line: Line): boolean {
 	}
 }
 
-/** Read the last `days` UTC days of ledger, today included. */
-function readLedger(days: number): { ledger: Ledger; files: number; bad: number } {
-	const ledger = new Ledger();
+/** Ledger lines with ts >= since. Day files are UTC; lines are filtered by their own time. */
+function readLedgerLines(since: number, now = Date.now()): { lines: Line[]; files: number; bad: number } {
+	const lines: Line[] = [];
 	let files = 0;
 	let bad = 0;
-	const now = Date.now();
-	for (let i = 0; i < days; i++) {
-		const file = join(LEDGER_DIR, `${utcDay(new Date(now - i * 86_400_000))}.jsonl`);
+	const lastDay = utcDay(new Date(now));
+	for (let t = Date.parse(`${utcDay(new Date(since))}T00:00:00Z`); utcDay(new Date(t)) <= lastDay; t += 86_400_000) {
+		const file = join(LEDGER_DIR, `${utcDay(new Date(t))}.jsonl`);
 		if (!existsSync(file)) continue;
 		files++;
 		for (const raw of readFileSync(file, "utf8").split("\n")) {
@@ -519,50 +638,160 @@ function readLedger(days: number): { ledger: Ledger; files: number; bad: number 
 					bad++;
 					continue;
 				}
-				ledger.add(l);
+				const ts = Date.parse(l.ts);
+				if (ts >= since && ts <= now) lines.push(l);
 			} catch {
 				bad++;
 			}
 		}
 	}
-	return { ledger, files, bad };
+	lines.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+	return { lines, files, bad };
+}
+
+/**
+ * Seat sessions written to after `since` whose last write is well after their
+ * last ledger line: their recent spend is not in the ledger yet. Agent sessions
+ * (header has parentSession) are skipped; their parent stands for them.
+ */
+function staleSessions(lines: Line[], since: number, only?: Set<string>): { id: string; name: string; mtime: number }[] {
+	const latest = new Map<string, number>();
+	const names = new Map<string, string>();
+	for (const l of lines) {
+		if (!l.sessionId) continue;
+		latest.set(l.sessionId, Math.max(latest.get(l.sessionId) ?? 0, Date.parse(l.ts)));
+		if (l.sessionName) names.set(l.sessionId, l.sessionName);
+	}
+	const out: { id: string; name: string; mtime: number }[] = [];
+	let dirs: string[] = [];
+	try {
+		dirs = readdirSync(SESSIONS_DIR);
+	} catch {
+		return out;
+	}
+	for (const dir of dirs) {
+		let files: string[] = [];
+		try {
+			files = readdirSync(join(SESSIONS_DIR, dir)).filter((f) => f.endsWith(".jsonl"));
+		} catch {
+			continue;
+		}
+		for (const f of files) {
+			const m = /_([0-9a-f-]{36})\.jsonl$/.exec(f);
+			if (!m || (only && !only.has(m[1]))) continue;
+			const path = join(SESSIONS_DIR, dir, f);
+			let mtime = 0;
+			try {
+				mtime = statSync(path).mtimeMs;
+			} catch {
+				continue;
+			}
+			if (mtime < since || mtime <= (latest.get(m[1]) ?? 0) + STALE_SLACK_MS) continue;
+			let head = "";
+			try {
+				const fd = openSync(path, "r");
+				const buf = Buffer.alloc(4096);
+				head = buf.subarray(0, readSync(fd, buf, 0, 4096, 0)).toString("utf8");
+				closeSync(fd);
+			} catch {
+				continue;
+			}
+			if (head.split("\n", 1)[0].includes('"parentSession"')) continue;
+			out.push({ id: m[1], name: names.get(m[1]) ?? /"type":"session_info"[^\n]*?"name":"([^"]*)"/.exec(head)?.[1] ?? `(unnamed ${m[1].slice(0, 8)})`, mtime });
+		}
+	}
+	return out.sort((a, b) => b.mtime - a.mtime);
+}
+
+function lastBackfill(): number | undefined {
+	try {
+		return statSync(join(LEDGER_DIR, ".last-backfill")).mtimeMs;
+	} catch {
+		return undefined;
+	}
 }
 
 // ---------- command parsing ----------
 
-type View = "types" | "agents" | "sessions" | "issues";
-type Range = { kind: "session" } | { kind: "days"; days: number; label: string };
+type View = "types" | "agents" | "sessions" | "issues" | "daily";
+type Range = { kind: "session" } | { kind: "since"; since: number; label: string };
 
-export function parseArgs(args: string): { view: View; range: Range } | { error: string } {
-	let view: View = "types";
+const USAGE = "Usage: /subagent-cost [types|agents|sessions|issues|daily] [session|today|week|<N>d|<N>h] [session:<name|id|this|all>]";
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+export function parseArgs(args: string, now = Date.now()): { view: View; range: Range; filter?: string } | { error: string } {
+	let view: View | undefined;
 	let range: Range | undefined;
+	let filter: string | undefined;
+	let wholeDays: number | undefined;
+	const midnight = new Date(now);
+	midnight.setHours(0, 0, 0, 0);
 	for (const tok of args.trim().toLowerCase().split(/\s+/).filter(Boolean)) {
-		if (tok === "types" || tok === "agents" || tok === "sessions" || tok === "issues") view = tok;
+		if (tok === "types" || tok === "agents" || tok === "sessions" || tok === "issues" || tok === "daily") view = tok;
 		else if (tok === "session") range = { kind: "session" };
-		else if (tok === "today") range = { kind: "days", days: 1, label: "today (UTC)" };
-		else if (tok === "week") range = { kind: "days", days: 7, label: "last 7 days (UTC)" };
-		else if (/^\d+d$/.test(tok)) {
-			const days = Math.max(1, Math.min(366, Number.parseInt(tok, 10)));
-			range = { kind: "days", days, label: `last ${days} days (UTC)` };
-		} else return { error: `Unknown argument "${tok}". Usage: /subagent-cost [types|agents|sessions|issues] [session|today|week|<N>d]` };
+		else if (tok.startsWith("session:") && tok.length > 8) filter = tok.slice(8);
+		else if (tok === "today") range = { kind: "since", since: midnight.getTime(), label: `today (since local midnight, ${tzName()})` };
+		else if (tok === "week") {
+			range = { kind: "since", since: now - 7 * 86_400_000, label: "last 7 days" };
+			wholeDays = 7;
+		}
+		else if (/^\d+[dh]$/.test(tok)) {
+			const n = Math.max(1, Math.min(tok.endsWith("d") ? 366 : 24 * 366, Number.parseInt(tok, 10)));
+			const hours = tok.endsWith("d") ? n * 24 : n;
+			range = { kind: "since", since: now - hours * 3_600_000, label: tok.endsWith("d") ? `last ${plural(n, "day")}` : `last ${plural(n, "hour")}` };
+			wholeDays = tok.endsWith("d") ? n : undefined;
+		} else return { error: `Unknown argument "${tok}". ${USAGE}` };
 	}
-	if (!range) range = view === "sessions" ? { kind: "days", days: 1, label: "today (UTC)" } : { kind: "session" };
-	if (view === "sessions" && range.kind === "session") return { error: "The sessions view needs a ledger range: today, week or <N>d." };
-	return { view, range };
+	if (!range) {
+		if (filter || view === "daily") {
+			range = { kind: "since", since: now - 7 * 86_400_000, label: "last 7 days" };
+			wholeDays = 7;
+		}
+		else if (view === "sessions") range = { kind: "since", since: midnight.getTime(), label: `today (since local midnight, ${tzName()})` };
+		else range = { kind: "session" };
+	}
+	// A ledger range reads as days; this session alone stays one table.
+	view ??= range.kind === "since" ? "daily" : "types";
+	// Per-day tables use whole local days: <N>d = today and the N-1 days before.
+	if (view === "daily" && range.kind === "since" && wholeDays) {
+		const start = new Date(midnight);
+		start.setDate(start.getDate() - (wholeDays - 1));
+		range = { kind: "since", since: start.getTime(), label: `last ${plural(wholeDays, "day")}, today included` };
+	}
+	if (range.kind === "session" && (view === "sessions" || view === "daily" || filter))
+		return { error: `That needs a ledger range (today, week, <N>d or <N>h), not "session". ${USAGE}` };
+	return { view, range, filter };
+}
+
+/** Session ids a filter matches: "this", exact name, id prefix, then name substring. */
+function matchSessions(lines: Line[], filter: string, currentId?: string): Map<string, string> {
+	const names = new Map<string, string>();
+	for (const l of lines) if (l.sessionId) names.set(l.sessionId, l.sessionName ?? names.get(l.sessionId) ?? "");
+	if (filter === "all") return names;
+	if (filter === "this") return new Map(currentId ? [[currentId, names.get(currentId) ?? "this session"]] : []);
+	const pick = (f: (id: string, name: string) => boolean) => new Map([...names].filter(([id, n]) => f(id, n.toLowerCase())));
+	for (const m of [pick((_, n) => n === filter), pick((id) => id.startsWith(filter)), pick((_, n) => n.includes(filter))]) if (m.size) return m;
+	return new Map();
 }
 
 const COMPLETIONS = [
 	["", "This session, by type and thinking"],
 	["agents", "This session's most expensive agents"],
-	["today", "All sessions today (UTC), by type and thinking"],
-	["week", "All sessions, last 7 days, by type and thinking"],
+	["today", "All sessions today"],
+	["week", "All sessions, total per day, last 7 days"],
+	["types week", "All sessions, last 7 days, one total per type and thinking"],
 	["agents today", "Most expensive agents today, all sessions"],
 	["agents week", "Most expensive agents, last 7 days"],
 	["sessions", "Spend per session today"],
 	["sessions week", "Spend per session, last 7 days"],
 	["issues week", "Agent spend per issue/PR number, last 7 days"],
 	["issues 30d", "Agent spend per issue/PR number, last 30 days"],
-	["30d", "All sessions, last 30 days"],
+	["30d", "All sessions, total per day, last 30 days"],
+	["types 30d", "All sessions, last 30 days, one total per type and thinking"],
+	["24h", "All sessions, last 24 hours"],
+	["session:this", "This session per day per model, last 7 days"],
+	["session:this 30d", "This session per day per model, last 30 days"],
+	["session:all week", "Every session's spend per day, last 7 days"],
 ] as const;
 
 // ---------- extension ----------
@@ -712,7 +941,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("subagent-cost", {
-		description: "Seat and subagent spend: [types|agents|sessions|issues] [session|today|week|<N>d]",
+		description: "Seat and subagent spend: [types|agents|sessions|issues|daily] [session|today|week|<N>d|<N>h] [session:<name|id|this|all>]",
 		getArgumentCompletions: (prefix: string) => {
 			const p = prefix.trim().toLowerCase();
 			const items = COMPLETIONS.filter(([v]) => v && v.startsWith(p)).map(([value, description]) => ({ value, label: value, description }));
@@ -725,6 +954,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			let ledger: Ledger;
+			let lines: Line[] = [];
 			let title: string;
 			const notes: string[] = [];
 			if (parsed.range.kind === "session") {
@@ -739,15 +969,52 @@ export default function (pi: ExtensionAPI) {
 				ledger.merge(session);
 				title = "This session";
 			} else {
-				const r = readLedger(parsed.range.days);
-				ledger = r.ledger;
+				const r = readLedgerLines(parsed.range.since);
+				lines = r.lines;
 				title = `All sessions, ${parsed.range.label}`;
+				let only: Set<string> | undefined;
+				if (parsed.filter) {
+					let currentId: string | undefined;
+					try {
+						currentId = ctx.sessionManager.getSessionId();
+					} catch {}
+					const matched = matchSessions(lines, parsed.filter, currentId);
+					only = new Set(matched.keys());
+					lines = lines.filter((l) => l.sessionId && only!.has(l.sessionId));
+					const who = parsed.filter === "all" ? [] : [...matched].map(([id, n]) => `${n || "(unnamed)"} ${id.slice(0, 13)}`);
+					title = parsed.filter === "all"
+						? `All sessions, ${parsed.range.label}`
+						: matched.size
+						? `${matched.size === 1 ? "Session" : `${matched.size} sessions`} ${who.slice(0, 4).join(", ")}${who.length > 4 ? ", …" : ""}, ${parsed.range.label}`
+						: `No session matching "${parsed.filter}" has spend in the ledger, ${parsed.range.label}`;
+					if (!matched.size) notes.push("A session that has not reloaded since seat tracking is in the ledger only after a backfill run.");
+				}
+				if (parsed.view === "daily") title += `, per local day (${tzName()})`;
+				ledger = new Ledger();
+				for (const l of lines) ledger.add(l);
 				if (r.files === 0) notes.push(`No ledger files in ${LEDGER_DIR.replace(homedir(), "~")} for this range.`);
 				if (r.bad > 0) notes.push(`${r.bad} malformed ledger line(s) skipped.`);
+				if (!parsed.filter || only?.size) {
+					const stale = staleSessions(r.lines, parsed.range.since, only);
+					if (stale.length) {
+						const lb = lastBackfill();
+						const names = stale.map((x) => x.name);
+						notes.push(
+							`Incomplete: ${plural(stale.length, "session")} spent after ${lb ? `the last backfill (${new Date(lb).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})` : "their last ledger line"} and ${stale.length === 1 ? "has" : "have"} not reloaded, so that spend is not counted yet: ${names.slice(0, 6).join(", ")}${names.length > 6 ? `, +${names.length - 6} more` : ""}. /reload there, or wait for the hourly backfill.`,
+						);
+					}
+				}
 			}
 			if (ledgerFailures > 0) notes.push(`${ledgerFailures} ledger write(s) failed in this session.`);
-			const views = { types: typesView, agents: agentsView, sessions: sessionsView, issues: issuesView };
-			const text = views[parsed.view](ledger, title);
+			const text =
+				parsed.view === "daily"
+					? dailyView(
+							lines,
+							title,
+							parsed.range.kind === "since" ? parsed.range.since : 0,
+							!parsed.filter ? "day" : parsed.filter === "all" ? "session" : "model",
+						)
+					: { types: typesView, agents: agentsView, sessions: sessionsView, issues: issuesView }[parsed.view](ledger, title);
 			ctx.ui.notify([text, ...notes].join("\n"), "info");
 		},
 	});

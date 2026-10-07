@@ -19,16 +19,33 @@ Three sources, each rebuilt per message the way the live extension writes it:
   id (time-ordered ids share prefixes); agents on the 8-character prefix, the
   only part the session name keeps. Safe to re-run at any time.
 - Not recoverable: nested agents (not saved), and the requested thinking level.
+- Live sessions keep appending while this runs (about 25 s). Each day file is
+  rewritten with whatever was appended after it was first read, and appends
+  that land on the old file during the swap are copied over afterwards, so no
+  live line is lost. One run at a time (flock on .backfill.lock); a run that
+  finds the lock held exits 0. Each completed run touches .last-backfill.
 
 Usage: subagent-ledger-backfill.py [--dry-run]
 """
-import glob, json, os, re, sys
+import fcntl, glob, json, os, re, sys, time
 from collections import defaultdict
+
+USAGE = "Usage: subagent-ledger-backfill.py [--dry-run]"
+if any(a not in ("--dry-run",) for a in sys.argv[1:]):
+    print(USAGE, file=sys.stderr if "-h" not in sys.argv and "--help" not in sys.argv else sys.stdout)
+    sys.exit(0 if ("-h" in sys.argv or "--help" in sys.argv) else 2)
 
 AGENT = os.environ.get("PI_CODING_AGENT_DIR", os.path.expanduser("~/.pi/agent"))
 SESSIONS = os.path.join(AGENT, "sessions")
 LEDGER = os.path.join(AGENT, "subagent-ledger")
 DRY = "--dry-run" in sys.argv
+os.makedirs(LEDGER, exist_ok=True)
+_lock = open(os.path.join(LEDGER, ".backfill.lock"), "w")
+try:
+    fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print("another backfill is running; skipped")
+    sys.exit(0)
 AGENT_NAME = re.compile(r"^([A-Za-z][\w-]*)#([0-9a-f]{6,})$")
 
 def entries(path):
@@ -44,9 +61,14 @@ def live_key(l):
 
 live_first, live_id = {}, {}
 existing = defaultdict(list)
+read_upto = {}  # day -> byte offset read so far
 for f in sorted(glob.glob(os.path.join(LEDGER, "*.jsonl"))):
     day = os.path.basename(f)[:10]
-    for raw in open(f):
+    with open(f, "rb") as fh:
+        data = fh.read()
+    data = data[: data.rfind(b"\n") + 1]  # a line mid-append is picked up at write time
+    read_upto[day] = len(data)
+    for raw in data.decode("utf-8", "replace").splitlines(keepends=True):
         try:
             l = json.loads(raw)
         except Exception:
@@ -184,13 +206,44 @@ for k, (n, lines, cost) in stats.items():
 print(f"{skipped} messages skipped (already live); {len(live_first)} agents/seats seen live")
 if DRY:
     sys.exit(0)
-os.makedirs(LEDGER, exist_ok=True)
+def tail(fd, offset):
+    """Whole lines appended at or after offset; returns (bytes, new offset)."""
+    os.lseek(fd, offset, os.SEEK_SET)
+    chunks = []
+    while True:
+        b = os.read(fd, 1 << 20)
+        if not b:
+            break
+        chunks.append(b)
+    data = b"".join(chunks)
+    data = data[: data.rfind(b"\n") + 1]
+    return data, offset + len(data)
+
 days = set(out) | set(existing)
+caught_up = 0
 for day in sorted(days):
+    path = os.path.join(LEDGER, f"{day}.jsonl")
     tmp = os.path.join(LEDGER, f".{day}.jsonl.tmp")
-    with open(tmp, "w") as fh:
-        for l in sorted(out.get(day, []), key=lambda l: l["ts"]):
-            fh.write(json.dumps(l) + "\n")
-        fh.writelines(existing.get(day, []))
-    os.replace(tmp, os.path.join(LEDGER, f"{day}.jsonl"))
-print(f"wrote {len(days)} day files to {LEDGER}")
+    old = os.open(path, os.O_RDONLY | os.O_CREAT, 0o644)
+    try:
+        # Live appends since the first read; never backfill lines (only this script writes those).
+        new_live, offset = tail(old, read_upto.get(day, 0))
+        with open(tmp, "wb") as fh:
+            for l in sorted(out.get(day, []), key=lambda l: l["ts"]):
+                fh.write((json.dumps(l) + "\n").encode())
+            fh.write("".join(existing.get(day, [])).encode())
+            fh.write(new_live)
+        os.replace(tmp, path)
+        # A writer that opened the old path just before the swap writes into the
+        # old inode; give it a moment, then copy anything it wrote.
+        time.sleep(0.05)
+        late, _ = tail(old, offset)
+        if late:
+            with open(path, "ab") as fh:
+                fh.write(late)
+        caught_up += new_live.count(b"\n") + late.count(b"\n")
+    finally:
+        os.close(old)
+with open(os.path.join(LEDGER, ".last-backfill"), "w") as fh:
+    fh.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")
+print(f"wrote {len(days)} day files to {LEDGER}; {caught_up} live lines appended during the run were kept")
