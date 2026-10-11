@@ -147,11 +147,15 @@ header. All of it changes the provider request only, never the transcript.
    whole conversation in the cache. The extension drops those removals for the
    two sections known to do this (`pi_background_shell_policy` from
    pi-background-tasks and `agent_browser` from pi-agent-browser-native).
-3. **A system prompt that loses its end on notification runs.** The same bug,
-   for an extension that returns `systemPrompt` from `before_agent_start`.
-   pi-memory appends its `## Memory` block this way. When a request's system
-   text is a strict prefix of the last full one, the extension puts the
-   missing end back.
+3. **A forced system prompt that notification runs do not send.** The same
+   bug, for an extension that returns `systemPrompt` from
+   `before_agent_start`. pi-memory appends its `## Memory` block this way.
+   pi sends that text as a forced prompt for the whole typed run, without the
+   sections that later extensions add. A run started by a notification has no
+   forced prompt and sends the transcript's version instead, so the two
+   versions swap and each swap rewrites the whole conversation. The extension
+   remembers the system text of the last typed run (one that fired
+   `before_agent_start`) and sends it on notification runs.
 4. **Keep-warm for idle sessions.** pi's own idle `cacheWarming` stops 30
    minutes after the last request, so it never fires with the 1-hour cache.
    After the session settles, the extension re-sends its last request with a

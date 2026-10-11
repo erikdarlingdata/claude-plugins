@@ -40,18 +40,20 @@
  *    ~/.pi/agent/bin/cache-debug-report.py. Set PI_CACHE_DEBUG=0 to turn it off.
  *    It also logs compaction start, success and failure (with pi's error text).
  *
- * 5. Keep a system-prompt tail that pi drops on notification runs (added
- *    2026-10-10). The same pi bug as fix 2, in its other shape: an extension
- *    that RETURNS systemPrompt from before_agent_start (pi-memory appends its
- *    "## Memory" snapshot this way) gets its text only on typed-prompt runs. A
- *    run started by sendMessage(triggerTurn) sends the base prompt, so the
- *    system prompt shrinks, the whole history is rewritten, and the next typed
- *    prompt grows it back (repro 2026-10-10: system 46,403 -> 33,094 chars, read
- *    3,136 / wrote 12,503; 29 such rewrites in the seats' first 27 debug-log
- *    hours, ~6.4M tokens). In before_provider_request, if the system text is a
- *    strict prefix of the last full system text this instance sent, the full
- *    text is put back (request only; logged as "system-tail-restored"). A typed
- *    run that sends a new, different prompt simply becomes the new reference.
+ * 5. Notification runs send the system prompt of the last typed run (added
+ *    2026-10-10, reworked 2026-10-11). The same pi bug as fix 2, in its
+ *    forced-prompt shape. An extension that RETURNS systemPrompt from
+ *    before_agent_start (pi-memory appends its "## Memory" block this way)
+ *    makes pi send that text, as a forced prompt, for the whole typed run; the
+ *    sections other extensions add after it are not in it. A run started by
+ *    sendMessage(triggerTurn) has no forced prompt and sends the transcript's
+ *    version instead (with those sections, without the memory block). Seats
+ *    swapped between the two (83,750 vs ~60,000 chars) and rewrote the whole
+ *    history each time: 12 rewrites, ~4.1M tokens, in 18.7 h. So: on a run that
+ *    fired before_agent_start, remember the system text it sends. On a run that
+ *    did not, send the remembered text instead (request only; logged as
+ *    "system-prompt-reused"). The first version (restore a missing tail) never
+ *    matched, because neither prompt is a prefix of the other.
  *
  * 4. Keep-warm for idle seats (added 2026-10-09). pi's own idle warming stops
  *    30 minutes after the last request (a constant in core/cache-warmer.js), so
@@ -182,9 +184,10 @@ function systemTextRef(payload: any): { get(): string; set(v: string): void } | 
 	return undefined;
 }
 
-/** Returns the text to send: the remembered full text when cur is a strict prefix of it. */
-export function restoreSystemTail(cur: string, remembered: string | undefined): string {
-	return remembered !== undefined && remembered.length > cur.length && remembered.startsWith(cur) ? remembered : cur;
+/** The system text to send: on a typed run, cur (and remember it); otherwise the remembered text. */
+export function chooseSystemText(cur: string, typedRun: boolean, remembered: string | undefined): { text: string; remember?: string } {
+	if (typedRun) return { text: cur, remember: cur };
+	return remembered !== undefined && remembered !== cur ? { text: remembered } : { text: cur };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -355,19 +358,29 @@ export default function (pi: ExtensionAPI) {
 		stopWarm();
 	});
 
-	let fullSystem: string | undefined;
+	let typedSystem: string | undefined;
+	let typedRun = false;
+	pi.on("before_agent_start", async () => {
+		typedRun = true;
+		return undefined;
+	});
+	pi.on("agent_end", async () => {
+		typedRun = false;
+		return undefined;
+	});
 	pi.on("before_provider_request", async (event, ctx) => {
 		let tailRestored = false;
 		if (!pinging) {
 			const ref = systemTextRef(event.payload);
 			if (ref) {
 				const cur = ref.get();
-				const out = restoreSystemTail(cur, fullSystem);
-				if (out !== cur) {
-					ref.set(out);
+				const r = chooseSystemText(cur, typedRun, typedSystem);
+				if (r.remember !== undefined) typedSystem = r.remember;
+				if (r.text !== cur) {
+					ref.set(r.text);
 					tailRestored = true;
-					if (debug) log({ type: "system-tail-restored", seq: seq + 1, addedChars: out.length - cur.length, added: out.slice(cur.length, cur.length + 120) });
-				} else fullSystem = cur;
+					if (debug) log({ type: "system-prompt-reused", seq: seq + 1, sentChars: cur.length, reusedChars: r.text.length });
+				}
 			}
 		}
 		if (keepWarm && !pinging && isSeat()) {
