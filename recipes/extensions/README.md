@@ -14,6 +14,7 @@ cp recipes/extensions/clickable-links.ts ~/.pi/agent/extensions/
 cp recipes/extensions/bang-notify.ts ~/.pi/agent/extensions/
 cp recipes/extensions/settle-bell.ts ~/.pi/agent/extensions/
 cp recipes/extensions/subagent-cost.ts ~/.pi/agent/extensions/
+cp recipes/extensions/cache-tuning.ts ~/.pi/agent/extensions/
 # Advanced and policy-sensitive; read its warning first:
 cp recipes/extensions/refusal-fallback.ts ~/.pi/agent/extensions/
 ```
@@ -31,6 +32,7 @@ reloading their parent session.
 | `bang-notify.ts` | Wake Pi when a contextual `!` command finishes; learn command completions | `~/.pi/agent/bang-notify.json`; history in `bang-history.json` |
 | `settle-bell.ts` | Ring BEL on `agent_settled` | Configure the terminal's bell/attention behavior |
 | `refusal-fallback.ts` | Retry an approved false-positive provider refusal on another model | Edit constants in the source |
+| `cache-tuning.ts` | Prompt-cache fixes for long-lived sessions on Anthropic models: 1-hour cache for the main session, two workarounds for a pi bug that changes the system prompt, a keep-warm for idle sessions, and a per-request debug log | `PI_CACHE_KEEPWARM=0`, `PI_CACHE_KEEPWARM_HOURS`, `PI_CACHE_DEBUG=0`; log in `~/.pi/agent/cache-debug/`; report `recipes/scripts/cache-debug-report.py` |
 | `subagent-cost.ts` | Session and subagent spend: footer chip by agent type and thinking level, machine-wide ledger, `/subagent-cost` reports | `/subagent-cost [types\|agents\|sessions\|issues\|daily] [session\|today\|week\|<N>d\|<N>h] [session:<name\|id\|this\|all>]`; ledger in `~/.pi/agent/subagent-ledger/` |
 
 ## subagent-cost.ts
@@ -122,6 +124,62 @@ touches `.last-backfill`, which the `Incomplete:` note quotes.
 To run it hourly on macOS, a launchd agent with `StartCalendarInterval`
 `Minute` 7, `Nice` 10 and `LowPriorityIO` works; on Linux, a cron line or a
 systemd timer.
+
+## cache-tuning.ts
+
+For sessions that run for days on an Anthropic model (direct or through
+OpenRouter) and are woken by background-task, subagent and intercom
+notifications. Checked against pi 1.0.4. Each part is measured in the source
+header. All of it changes the provider request only, never the transcript.
+
+1. **1-hour cache for the main session.** Sets `PI_CACHE_RETENTION=long` when
+   it is unset. pi reads the variable on every request, so `/reload` applies
+   it. `long` is the only value that changes anything. Subagents run in the
+   same process, so they inherit it. The extension strips the 1-hour TTL from
+   their requests again, because they rarely sit idle long enough to gain from
+   it and a 1-hour write costs 2x input instead of 1.25x.
+2. **Prompt sections that disappear on notification runs.** pi runs
+   `before_agent_start` only for typed prompts
+   ([earendil-works/pi#10267](https://github.com/earendil-works/pi/issues/10267)).
+   On the second request of a run started by `sendMessage(..., { triggerTurn:
+   true })`, pi records a removal of every section an extension added there.
+   The next typed prompt adds it back. On Anthropic each change rewrites the
+   whole conversation in the cache. The extension drops those removals for the
+   two sections known to do this (`pi_background_shell_policy` from
+   pi-background-tasks and `agent_browser` from pi-agent-browser-native).
+3. **A system prompt that loses its end on notification runs.** The same bug,
+   for an extension that returns `systemPrompt` from `before_agent_start`.
+   pi-memory appends its `## Memory` block this way. When a request's system
+   text is a strict prefix of the last full one, the extension puts the
+   missing end back.
+4. **Keep-warm for idle sessions.** pi's own idle `cacheWarming` stops 30
+   minutes after the last request, so it never fires with the 1-hour cache.
+   After the session settles, the extension re-sends its last request with a
+   one-token output cap every 54 minutes. A ping costs one cache read, about
+   1/40 of a rewrite. It stops at the next real request, at compaction, after
+   24 hours, when a timer fires late (sleep), and when a ping fails or finds
+   the cache gone. Main session only. Pings are logged and, if
+   `subagent-cost.ts` is installed, written to its ledger as seat lines with
+   thinking `(cache warm)`.
+5. **Debug log.** Every request is split into blocks (settings, each tool, the
+   system prompt, each message part) and hashed. The log records where it first
+   differs from the previous request, the cache usage of each reply, each ping,
+   and each compaction start, success or failure. `cache-debug-report.py
+   [hours] [--all]` lists every full rewrite with its cause: "prefix
+   unchanged" (the provider dropped the cache), the block that changed, or a
+   reload.
+
+Two related settings that are not in the extension:
+
+- **pi-lens context injection.** pi-lens adds one-time messages (start-up
+  guidance, turn-end findings) to a single request and does not save them, so
+  the next request differs at that point and the rest is rewritten. In long
+  sessions, set `{"contextInjection": {"enabled": false}}` in
+  `~/.pi-lens/config.json`. Its tools, LSP and read guard keep working.
+- **Changing the thinking level for one turn** keeps the cache on models
+  where pi sends effort as a mid-conversation message (Opus 5.5:
+  `supportsMidConvoEffort`). On a model without it, a level change rewrites
+  the whole cache once.
 
 ## Safety notes
 

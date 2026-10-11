@@ -132,7 +132,29 @@ session's own spend plus its agents' across the machine, use the
 Direct OpenAI currently has no built-in cache-lifetime metadata for Pi's warmer,
 so warming may report unavailable even when provider-side prompt caching exists.
 `PI_CACHE_RETENTION=long` requests longer retention where supported; inspect
-`/session` rather than assuming it took effect.
+`/session` rather than assuming it took effect. `long` is the only value that
+changes anything; unset or any other value means the 5-minute cache. On
+OpenRouter it applies to `anthropic/...` model IDs, not to `~anthropic/...`
+aliases.
+
+For sessions that run for days and are woken by notifications, most of the
+bill is cache writes, not output. Measured on one week of such sessions (pi
+1.0.4, Claude Opus 5.5 through OpenRouter):
+
+- A wake after more than 5 minutes idle rewrote the whole context with the
+  default 5-minute cache. The 1-hour cache fixes waits under an hour. pi's
+  idle warming stops 30 minutes after the last request, so it does not cover
+  longer waits.
+- pi does not run `before_agent_start` for runs started by a notification
+  ([earendil-works/pi#10267](https://github.com/earendil-works/pi/issues/10267)).
+  Prompt text that extensions add there (pi-background-tasks, the agent-browser
+  extension, pi-memory) disappears and comes back, and each change rewrites
+  the whole conversation.
+- pi-lens injects one-time messages that the next request does not have.
+
+The `cache-tuning.ts` recipe (section 14) covers the first two, adds a
+keep-warm for idle sessions and logs the cause of every full rewrite. For the
+third, see the pi-lens note in section 6.
 
 ### Compaction budget on large-context models
 
@@ -317,6 +339,11 @@ pi install npm:pi-memory
 # Only if you use MCP:
 pi install npm:pi-mcp-adapter
 ```
+
+In long-running sessions on a cached model, turn off pi-lens context injection
+with `{"contextInjection": {"enabled": false}}` in `~/.pi-lens/config.json`.
+Its messages are sent once and not saved, so the next request rewrites the
+conversation after them. Tools, LSP and the read guard keep working.
 
 ### Delegation
 
@@ -676,6 +703,11 @@ Available recipes:
   session or all of them. Needs a pi-subagents build with the `subagents:usage`
   event (see the recipe README). `recipes/scripts/subagent-ledger-backfill.py`
   rebuilds the ledger from saved subagent sessions.
+- `cache-tuning.ts` — prompt-cache fixes for long-lived sessions on Anthropic
+  models: 1-hour cache for the main session only, workarounds for prompt text
+  that disappears on notification runs (pi#10267), a keep-warm for idle
+  sessions, and a debug log of why each full cache rewrite happened
+  (`recipes/scripts/cache-debug-report.py`).
 
 Copy only what you want into `~/.pi/agent/extensions/`, review it first, and run
 `/reload` only after useful subagents have finished.
