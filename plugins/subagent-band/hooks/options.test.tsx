@@ -42,6 +42,19 @@ test('a model outside the priceTable is priced as its first family', { options: 
   expect(await run($ as never)).toMatch(/subagents \$3\.35 \(1\), main session \$3\.35/)
 })
 
+test('the default prices price claude-haiku-5-5 at $0.10/$0.50 and claude-haiku-4-5 at $1/$5', async ($, on) => {
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
+  on('agent.spawn', async () => ({ model: 'claude-haiku-4-5', agentId: 'a1' }))
+  on('turn.step', async function* (_$, e) {
+    const model = e.agentId ? 'claude-haiku-4-5' : 'claude-haiku-5-5'
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use',
+      usage: { model, input_tokens: 1000000, output_tokens: 1000000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }
+  })
+  mock.clock(on, { now: 0 })
+  // haiku-4-5 at $1/$5: 1 + 5 = 6.00; haiku-5-5 at $0.10/$0.50: 0.10 + 0.50 = 0.60
+  expect(await run($ as never)).toMatch(/subagents \$6\.00 \(1\), main session \$0\.60/)
+})
+
 test('cacheWriteMultiplier and cacheReadMultiplier scale the cache prices', { options: { cacheWriteMultiplier: 2, cacheReadMultiplier: 1 } }, async ($, on) => {
   engine(on)
   // sonnet: 3 + 6 + 3 + 15 = 27

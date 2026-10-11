@@ -39,7 +39,8 @@ const usd = (n: number) => `$${n.toFixed(2)}`
 // Prices per million tokens (input, output), by model family: "opus:4:20, sonnet:2:10" -> [['opus', 4, 20], ['sonnet', 2, 10]].
 // A model whose id names none of the families is priced as the first one. Estimates, not the bill.
 type Prices = { table: [string, number, number][]; cacheWrite: number; cacheRead: number }
-const DEFAULT_PRICES = 'opus:4:20, sonnet:2:10, haiku:1:5, fable:10:50'
+// Order matters: the first family the model id contains prices it, so haiku-5-5 must come before haiku.
+const DEFAULT_PRICES = 'opus:4:20, sonnet:2:10, haiku-5-5:0.1:0.5, haiku:1:5, fable:10:50'
 
 function parsePrices(value: unknown, cacheWrite: unknown, cacheRead: unknown): Prices {
   const parse = (text: string) =>
