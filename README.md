@@ -215,7 +215,7 @@ to read output files to check progress. Costs are list-price estimates, not your
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `priceTable` | `opus:4:20, sonnet:2:10, haiku:1:5, fable:10:50` | Input and output USD per million tokens for each model family. A model id is matched by containing the family name. |
+| `priceTable` | `opus:4:20, sonnet:2:10, haiku-5-5:0.1:0.5, haiku:1:5, fable:10:50` | Input and output USD per million tokens for each model family. A model id is matched by containing the family name, first entry first. Haiku 5.5 requests with a prompt over 100,000 tokens (cache reads and writes included) are priced at 5x for the whole request, as Anthropic bills them. |
 | `cacheWriteMultiplier` | 1.25 | Cache write price as a multiple of the input price. |
 | `cacheReadMultiplier` | 0.1 | Cache read price as a multiple of the input price. |
 

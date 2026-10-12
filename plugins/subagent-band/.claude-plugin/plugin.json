@@ -1,6 +1,6 @@
 {
   "name": "subagent-band",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A band above the prompt with each running subagent's type, model, effort, steps, context, advisor calls and estimated cost; a /fleet pane, /steer, /subagent-cost, and a subagent_vitals tool for the model",
   "types": "./types/index.d.ts",
   "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },
@@ -12,8 +12,8 @@
     "priceTable": {
       "type": "string",
       "title": "Model prices per million tokens",
-      "description": "Comma-separated family:input:output in USD, such as opus:4:20, sonnet:2:10, haiku:1:5, fable:10:50. A model id is matched by containing the family name; one that matches none is priced as the first entry. Used for the cost estimates only.",
-      "default": "opus:4:20, sonnet:2:10, haiku:1:5, fable:10:50"
+      "description": "Comma-separated family:input:output in USD, such as opus:4:20, sonnet:2:10, haiku-5-5:0.1:0.5, haiku:1:5, fable:10:50. A model id is matched by containing the family name; one that matches none is priced as the first entry. Used for the cost estimates only.",
+      "default": "opus:4:20, sonnet:2:10, haiku-5-5:0.1:0.5, haiku:1:5, fable:10:50"
     },
     "cacheWriteMultiplier": {
       "type": "number",

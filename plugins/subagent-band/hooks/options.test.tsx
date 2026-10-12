@@ -42,6 +42,44 @@ test('a model outside the priceTable is priced as its first family', { options: 
   expect(await run($ as never)).toMatch(/subagents \$3\.35 \(1\), main session \$3\.35/)
 })
 
+// The main session runs claude-haiku-5-5 and the subagent claude-haiku-4-5, each taking one step with `usage`.
+const haikuEngine = (on: On, usage: { input: number; output: number; read?: number; write?: number }) => {
+  on('turn.complete', async (_$, e) => ({ text: e.answer }))
+  on('agent.spawn', async () => ({ model: 'claude-haiku-4-5', agentId: 'a1' }))
+  on('turn.step', async function* (_$, e) {
+    const model = e.agentId ? 'claude-haiku-4-5' : 'claude-haiku-5-5'
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use',
+      usage: { model, input_tokens: usage.input, output_tokens: usage.output,
+        cache_read_input_tokens: usage.read ?? 0, cache_creation_input_tokens: usage.write ?? 0 } }
+  })
+  mock.clock(on, { now: 0 })
+}
+
+test('the default prices price claude-haiku-5-5 at $0.10/$0.50 and claude-haiku-4-5 at $1/$5', async ($, on) => {
+  haikuEngine(on, { input: 100000, output: 100000 })
+  // haiku-4-5 at $1/$5: 0.10 + 0.50 = 0.60; haiku-5-5 at $0.10/$0.50, a prompt of exactly 100k: 0.01 + 0.05 = 0.06
+  expect(await run($ as never)).toMatch(/subagents \$0\.60 \(1\), main session \$0\.06/)
+})
+
+test('a claude-haiku-5-5 prompt over 100k tokens is priced at 5x for the whole request, not claude-haiku-4-5', async ($, on) => {
+  haikuEngine(on, { input: 100001, output: 100000 })
+  // haiku-5-5 over 100k, $0.50/$2.50: 0.05 + 0.25 = 0.30; haiku-4-5 has no long-prompt tier: 0.60
+  expect(await run($ as never)).toMatch(/subagents \$0\.60 \(1\), main session \$0\.30/)
+})
+
+test('the 100k tier counts cache reads and cache writes in the prompt, and scales their prices', async ($, on) => {
+  // 1000 + 98999 + 1 = 100000 tokens of prompt: standard prices
+  haikuEngine(on, { input: 1000, read: 98999, write: 1, output: 1000000 })
+  // standard: output 0.50 + input 0.0001 + read 0.00098999 + write 0.000000125 = 0.50109 -> $0.50
+  expect(await run($ as never)).toMatch(/main session \$0\.50/)
+})
+
+test('one more cached token puts the request over 100k and the whole request, cache prices included, at 5x', async ($, on) => {
+  haikuEngine(on, { input: 1000, read: 99000, write: 1, output: 1000000 })
+  // 100001 tokens of prompt: 5 x (0.50 + 0.0001 + 0.00099 + 0.000000125) = 2.5054... -> $2.51
+  expect(await run($ as never)).toMatch(/main session \$2\.51/)
+})
+
 test('cacheWriteMultiplier and cacheReadMultiplier scale the cache prices', { options: { cacheWriteMultiplier: 2, cacheReadMultiplier: 1 } }, async ($, on) => {
   engine(on)
   // sonnet: 3 + 6 + 3 + 15 = 27

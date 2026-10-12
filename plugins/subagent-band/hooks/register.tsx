@@ -39,7 +39,8 @@ const usd = (n: number) => `$${n.toFixed(2)}`
 // Prices per million tokens (input, output), by model family: "opus:4:20, sonnet:2:10" -> [['opus', 4, 20], ['sonnet', 2, 10]].
 // A model whose id names none of the families is priced as the first one. Estimates, not the bill.
 type Prices = { table: [string, number, number][]; cacheWrite: number; cacheRead: number }
-const DEFAULT_PRICES = 'opus:4:20, sonnet:2:10, haiku:1:5, fable:10:50'
+// Order matters: the first family the model id contains prices it, so haiku-5-5 must come before haiku.
+const DEFAULT_PRICES = 'opus:4:20, sonnet:2:10, haiku-5-5:0.1:0.5, haiku:1:5, fable:10:50'
 
 function parsePrices(value: unknown, cacheWrite: unknown, cacheRead: unknown): Prices {
   const parse = (text: string) =>
@@ -55,10 +56,18 @@ function parsePrices(value: unknown, cacheWrite: unknown, cacheRead: unknown): P
   return { table, cacheWrite: Number(cacheWrite ?? 1.25), cacheRead: Number(cacheRead ?? 0.1) }
 }
 
-const stepCost = (u: TurnUsage, prices: Prices) => {
-  const [, input, output] = prices.table.find(([family]) => u.model.toLowerCase().includes(family)) ?? prices.table[0]
+// Haiku 5.5 prices the whole request at 5x (input, cache and output alike) when its prompt, counting cache reads and
+// writes, is over 100,000 tokens (platform.claude.com/docs/en/about-claude/pricing, "Long context pricing"). The 5x
+// applies to a user's haiku-5-5 priceTable entry too, and the cache multipliers apply on top, as for every model.
+const LONG_PROMPT_TOKENS = 100_000
+const LONG_PROMPT_MULTIPLIER = 5
 
-  return (u.input_tokens * input + u.cache_creation_input_tokens * prices.cacheWrite * input +
+const stepCost = (u: TurnUsage, prices: Prices) => {
+  const [family, input, output] = prices.table.find(([family]) => u.model.toLowerCase().includes(family)) ?? prices.table[0]
+  const prompt = u.input_tokens + u.cache_creation_input_tokens + u.cache_read_input_tokens
+  const tier = family === 'haiku-5-5' && prompt > LONG_PROMPT_TOKENS ? LONG_PROMPT_MULTIPLIER : 1
+
+  return tier * (u.input_tokens * input + u.cache_creation_input_tokens * prices.cacheWrite * input +
     u.cache_read_input_tokens * prices.cacheRead * input + u.output_tokens * output) / 1e6
 }
 

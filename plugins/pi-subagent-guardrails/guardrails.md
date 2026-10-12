@@ -58,7 +58,8 @@ Name models by tier and moving alias, never by an explicit version. A pinned ver
 - A worker escalates to top only for one of the three top-tier reasons, named in its brief.
 - Interactive coordinator sessions choose their own model. The policy governs the children they spawn.
 - Price context (OpenRouter, 2026-09-23, per M tokens in/out): Opus 5.5 $4/$20; Sonnet 5 $2/$10; GPT Sol $2/$10;
-  GPT Luna $0.10/$0.50; Fable and GPT Astra $10/$50; Haiku $1/$5. Workspace guardrails can block models: test each
+  GPT Luna $0.10/$0.50; Fable and GPT Astra $10/$50; Haiku 5.5 $0.10/$0.50 ($0.50/$2.50 when a
+  request's prompt is over 100k tokens); Haiku 4.5 and other haiku ids $1/$5. Workspace guardrails can block models: test each
   alias with one `pi -p` call before you put it in an agent file or an allowlist.
 
 ## 3. Context
