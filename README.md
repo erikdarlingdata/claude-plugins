@@ -225,6 +225,13 @@ Watches the account's 5-hour and 7-day usage windows. A toast tells you each tim
 percent. Past a higher percent, Claude also gets a one-time note so it can stop starting optional work
 and write its handoff. Past the last one, new subagents are refused until the window resets.
 
+It also checks pace. When the 7-day usage runs 10 or more points ahead of the share of the week that has
+passed (70% used with 60% of the week gone), you get a toast and Claude gets a note, once per window and
+again each time the gap grows by another margin. New subagents are refused too. The message gives the usage,
+the elapsed share, and the UTC time the refusal lifts if usage stays flat: the moment the week catches up to
+within the margin. The refusal says that Erik's OK, or waiting until then, lifts it; the plugin itself only
+refuses, and `paceMargin` 0 turns the check off. Without a reset time for the window, the check is skipped.
+
 ```
 /plugin install usage-budget@erikdarling
 ```
@@ -234,6 +241,7 @@ and write its handoff. Past the last one, new subagents are refused until the wi
 | `warnPercents` | `70, 85, 95` | Percents that raise a toast, once each per window. |
 | `tellModelAtPercent` | 85 | From here the model is told as well. 0 never tells it. |
 | `spawnGatePercent` | 95 | A new subagent is refused when either window is at or past this. 0 turns the refusal off. |
+| `paceMargin` | 10 | Points the 7-day usage may run ahead of the share of the week passed before the warning and the refusal. 0 turns the pace check off. |
 
 ### `subagent-wall`
 
