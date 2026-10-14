@@ -32,7 +32,7 @@ reloading their parent session.
 | `bang-notify.ts` | Wake Pi when a contextual `!` command finishes; learn command completions | `~/.pi/agent/bang-notify.json`; history in `bang-history.json` |
 | `settle-bell.ts` | Ring BEL on `agent_settled` | Configure the terminal's bell/attention behavior |
 | `refusal-fallback.ts` | Retry an approved false-positive provider refusal on another model | Edit constants in the source |
-| `cache-tuning.ts` | Prompt-cache fixes for long-lived sessions on Anthropic models: 1-hour cache for the main session, two workarounds for a pi bug that changes the system prompt, a keep-warm for idle sessions, and a per-request debug log | `PI_CACHE_KEEPWARM=0`, `PI_CACHE_KEEPWARM_HOURS`, `PI_CACHE_DEBUG=0`; log in `~/.pi/agent/cache-debug/`; report `recipes/scripts/cache-debug-report.py` |
+| `cache-tuning.ts` | Prompt-cache fixes for long-lived sessions on Anthropic models: 1-hour cache for the main session, two workarounds (needed before pi 1.2.0) for a pi bug that changes the system prompt, a keep-warm for idle sessions, and a per-request debug log | `PI_CACHE_KEEPWARM=0`, `PI_CACHE_KEEPWARM_HOURS`, `PI_CACHE_DEBUG=0`; log in `~/.pi/agent/cache-debug/`; report `recipes/scripts/cache-debug-report.py` |
 | `subagent-cost.ts` | Session and subagent spend: footer chip by agent type and thinking level, machine-wide ledger, `/subagent-cost` reports | `/subagent-cost [types\|agents\|sessions\|issues\|daily] [session\|today\|week\|<N>d\|<N>h] [session:<name\|id\|this\|all>]`; ledger in `~/.pi/agent/subagent-ledger/` |
 
 ## subagent-cost.ts
@@ -129,7 +129,8 @@ systemd timer.
 
 For sessions that run for days on an Anthropic model (direct or through
 OpenRouter) and are woken by background-task, subagent and intercom
-notifications. Checked against pi 1.0.4. Each part is measured in the source
+notifications. Checked against pi 1.0.4, with parts 2 and 3 re-read against the
+pi 1.2.0 code. Each part is measured in the source
 header. All of it changes the provider request only, never the transcript.
 
 1. **1-hour cache for the main session.** Sets `PI_CACHE_RETENTION=long` when
@@ -138,7 +139,9 @@ header. All of it changes the provider request only, never the transcript.
    same process, so they inherit it. The extension strips the 1-hour TTL from
    their requests again, because they rarely sit idle long enough to gain from
    it and a 1-hour write costs 2x input instead of 1.25x.
-2. **Prompt sections that disappear on notification runs.** pi runs
+2. **Prompt sections that disappear on notification runs.** Not needed on pi
+   1.2.0 and later: pi now runs `before_agent_start` for notification runs
+   (pi#10267, fixed in 1.2.0). On older pi, pi runs
    `before_agent_start` only for typed prompts
    ([earendil-works/pi#10267](https://github.com/earendil-works/pi/issues/10267)).
    On the second request of a run started by `sendMessage(..., { triggerTurn:
@@ -147,7 +150,9 @@ header. All of it changes the provider request only, never the transcript.
    whole conversation in the cache. The extension drops those removals for the
    two sections known to do this (`pi_background_shell_policy` from
    pi-background-tasks and `agent_browser` from pi-agent-browser-native).
-3. **A forced system prompt that notification runs do not send.** The same
+3. **A forced system prompt that notification runs do not send.** Not needed
+   on pi 1.2.0 and later. This comes from reading the 1.2.0 code and has not
+   been tested on a live session. On older pi, the same
    bug, for an extension that returns `systemPrompt` from
    `before_agent_start`. pi-memory appends its `## Memory` block this way.
    pi sends that text as a forced prompt for the whole typed run, without the
