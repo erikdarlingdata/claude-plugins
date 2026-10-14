@@ -10,7 +10,9 @@ const linkedWorktrees = ['c:/w/app/.claude/worktrees/a1']
 const engine = (on: On) => {
   on('tool.call', async () => ({ result: 'ok', text: 'ok' }) as never)
   on('fs.stat', async (_$, e) => {
-    const path = String((e as { path: string }).path).replace(/\\/g, '/').toLowerCase()
+    // On macOS and Linux a drive-letter path is not absolute, so the engine hands it over resolved against the plugin
+    // folder (<root>/C:/x). Dropping everything before the drive letter keeps these Windows fixtures valid there too.
+    const path = String((e as { path: string }).path).replace(/\\/g, '/').toLowerCase().replace(/^.*\/(?=[a-z]:\/)/, '')
     const kind = path.endsWith('/.git')
       ? (plainCheckouts.includes(path.slice(0, -5)) ? 'dir' : linkedWorktrees.includes(path.slice(0, -5)) ? 'file' : undefined)
       : path.includes('big') || path.includes('small') || path.includes('x.cs') ? 'file' : undefined

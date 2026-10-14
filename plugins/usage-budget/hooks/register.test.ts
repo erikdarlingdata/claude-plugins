@@ -103,7 +103,8 @@ test('usage exactly 10 points ahead of the week refuses a spawn, and says when i
   expect(refused.deny).toMatch(/7-day usage is at 70% with 60% of the week passed, 10 points ahead of pace/)
   // Flat usage at 70% is 10 ahead until 60% of the week has passed: now.
   expect(refused.deny).toMatch(/refused until 2026-10-05 04:48Z \(UTC\) if usage stays flat/)
-  expect(refused.deny).toMatch(/Erik's OK, or waiting until that time, lifts it/)
+  expect(refused.deny).toMatch(/Waiting until then lifts it, and so does the user setting this plugin's paceMargin option to 0/)
+  expect(refused.deny).not.toMatch(/Erik/)
 })
 
 test('the refusal lifts when elapsed reaches usage minus the margin', async ($, on) => {
@@ -198,7 +199,9 @@ const files = (on: On, env: Record<string, string>, fail = false) => {
   on('fs.write', async (_$, e) => {
     const { path, text } = e as unknown as { path: string; text: string }
     if (fail) throw new Error('EACCES: permission denied')
-    written.set(path.split('\\').join('/'), text) // the engine hands the path over in the OS's own form
+    // On macOS and Linux a drive-letter path is not absolute, so the engine hands it over resolved against the plugin
+    // folder (<root>/C:/x). Dropping everything before the drive letter keeps these Windows fixtures valid there too.
+    written.set(path.split('\\').join('/').replace(/^.*\/(?=[A-Za-z]:\/)/, ''), text) // the engine hands the path over in the OS's own form
     return { value: undefined } as never
   })
   return written
@@ -253,10 +256,30 @@ test('an empty usage_file writes nothing, and the warnings still fire', { option
   expect(toasts[0]).toMatch(/7-day window is at 86%/)
 })
 
-test('a write that throws does not fail the measure or toast, and the warnings still fire', async ($, on) => {
+test('a write that throws does not fail the measure, is toasted once, and the warnings still fire', async ($, on) => {
   const toasts = engine(on, [], SIXTY_PERCENT)
   files(on, { CLAUDE_CONFIG_DIR: 'C:/Home/.claude' }, true)
   const result = await $.session.measure(measure([{ kind: 'five_hour', percentUsed: 71, resetsAt: '2026-10-05T09:00:00Z' }]) as never)
   expect(result).toEqual({ changed: ['rateLimits'] })
-  expect(toasts).toEqual(['Usage: the 5-hour window is at 71% (resets 2026-10-05 09:00Z)'])
+  await $.session.measure(measure([{ kind: 'five_hour', percentUsed: 72, resetsAt: '2026-10-05T09:00:00Z' }]) as never)
+  expect(toasts.filter(t => t.startsWith('usage-budget: could not write'))).toHaveLength(1)
+  expect(toasts.find(t => t.startsWith('usage-budget: could not write'))).toMatch(/could not write .*usage-budget\/latest\.json \(.+\)/)
+  expect(toasts).toContain('Usage: the 5-hour window is at 71% (resets 2026-10-05 09:00Z)')
+})
+
+test('a threshold note and a pace note crossed before the next tool result both reach the model', async ($, on) => {
+  engine(on, [], SIXTY_PERCENT)
+  const RESET = new Date(Date.parse('2026-10-01T00:00:00Z') + WEEK_MS).toISOString().replace('.000', '')
+  await $.session.measure(measure([{ kind: 'seven_day', percentUsed: 75, resetsAt: RESET }]) as never)
+  await $.session.measure(measure([{ kind: 'five_hour', percentUsed: 86, resetsAt: '2026-10-05T09:00:00Z' }]) as never)
+  const first = await $.tool.call(bash())
+  const text = (first.context ?? []).join(' ')
+  expect(text).toMatch(/ahead of pace/)
+  expect(text).toMatch(/5-hour usage window is at 86%/)
+})
+
+test('a negative option falls back to its default instead of turning the check off (only 0 turns it off)', { options: { spawnGatePercent: -1 } }, async ($, on) => {
+  engine(on, [{ kind: 'five_hour', percentUsed: 96, resetsAt: '2026-10-08T14:00:00Z' }])
+  const refused = await $.agent.spawn({ prompt: 'x', description: 'x', subagentType: 'builder' })
+  expect(refused.deny).toMatch(/at or past the 95% limit/)
 })

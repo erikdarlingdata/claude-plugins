@@ -1,6 +1,6 @@
 {
   "name": "usage-budget",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Warns as the account's 5-hour and 7-day usage windows fill, tells the model as they near the limit, refuses new subagents past a set percent, and warns and refuses them when 7-day usage runs ahead of the share of the week that has passed",
   "types": "./types/index.d.ts",
   "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },

@@ -16,15 +16,18 @@ function parsePercents(value: unknown): number[] {
 }
 
 const DEFAULT_PACE_MARGIN = 10
+const DEFAULT_GATE = 95
+const DEFAULT_TELL_MODEL_AT = 85
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 const MINUTE_MS = 60 * 1000
 
-// "10" -> 10; 0 turns the pace check off; anything that does not parse to a non-negative number falls back to the default.
-function parseMargin(value: unknown): number {
+// "10" -> 10; 0 turns the check off; anything that does not parse to a non-negative number falls back to the default,
+// so a typo in an option cannot turn a check off without a word.
+function parseNonNegative(value: unknown, fallback: number): number {
   const text = String(value ?? '').trim()
   const parsed = text === '' ? NaN : Number(text)
 
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_PACE_MARGIN
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
 
 const utc = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')}Z`
@@ -59,6 +62,11 @@ const paceFacts = (p: Pace) =>
 
 const warned = atom({ plugin: 'usage-budget', key: 'warned' } as const, {} as Record<string, Warned>)
 const note = atom({ plugin: 'usage-budget', key: 'note' } as const, null as string | null)
+// Set after the first failed write of the usage file, so that failure is toasted once, not on every measure.
+const writeFailed = atom({ plugin: 'usage-budget', key: 'writeFailed' } as const, false as boolean)
+
+// A pending note for the model gains the new text; nothing already pending is dropped.
+const addNote = (pending: string | null, text: string) => `${pending ? `${pending} ` : ''}${text}`
 
 const NAMES: Record<string, string> = { five_hour: '5-hour', seven_day: '7-day' }
 const name = (kind: string) => NAMES[kind] ?? kind
@@ -88,13 +96,27 @@ async function usageFileOf($: EngineInterface, options: PluginOptions): Promise<
 }
 
 // The latest rate-limit figures as a small JSON file, so a session that cannot see its own status line (a coordinator
-// writing its usage checks) can read them. $.fs has no mkdir: the write is left to create the folder, and a failed
-// write is dropped, never thrown or toasted.
+// writing its usage checks) can read them. $.fs has no mkdir: the write is left to create the folder. A failed write
+// never fails the measure. It is toasted once per session, so a missing folder does not leave the file silently stale.
+// The write is not atomic, so a reader that catches it half-written should read again.
 async function writeLatest($: EngineInterface, options: PluginOptions, rateLimits: SessionRateLimit[], paceMargin: number) {
   const path = await usageFileOf($, options)
   if (!path) {
     return
   }
+  try {
+    await writeBody($, path, rateLimits, paceMargin)
+  } catch (err) {
+    if (!(await read($, writeFailed))) {
+      await update($, writeFailed, () => true)
+      const reason = String(err instanceof Error ? err.message : err).slice(0, 200)
+      $.ui.toast(`usage-budget: could not write ${path} (${reason}). The file stays out of date until a write works; ` +
+        'if its folder does not exist, create it once.')
+    }
+  }
+}
+
+async function writeBody($: EngineInterface, path: string, rateLimits: SessionRateLimit[], paceMargin: number) {
 
   const now = await $.clock.now()
   const week = rateLimits.find(w => w.kind === 'seven_day')
@@ -107,13 +129,13 @@ async function writeLatest($: EngineInterface, options: PluginOptions, rateLimit
 }
 
 export const register: Register = (on, options) => {
-  const gate = Number(options.spawnGatePercent ?? 95)
+  const gate = parseNonNegative(options.spawnGatePercent, DEFAULT_GATE)
   const thresholds = parsePercents(options.warnPercents ?? DEFAULT_THRESHOLDS.join(', '))
   // From this level on, the main session's model is told too, not just the person. 0 never tells the model.
-  const tellModelAt = Number(options.tellModelAtPercent ?? 85)
+  const tellModelAt = parseNonNegative(options.tellModelAtPercent, DEFAULT_TELL_MODEL_AT)
   // New spawns are refused, and the seat warned, when 7-day usage runs this many points ahead of the share of the week
   // that has passed. 0 turns the check off.
-  const paceMargin = parseMargin(options.paceMargin ?? DEFAULT_PACE_MARGIN)
+  const paceMargin = parseNonNegative(options.paceMargin, DEFAULT_PACE_MARGIN)
 
   on('session.measure', async ($, e, next) => {
     if (e.rateLimits.length > 0) {
@@ -138,9 +160,9 @@ export const register: Register = (on, options) => {
             ? ` New subagent spawns are now refused (limit ${gate}%).`
             : ` New subagent spawns will be refused at ${gate}%.`
           : ''
-        await update($, note, () =>
+        await update($, note, pending => addNote(pending,
           `usage-budget: the account's ${name(w.kind)} usage window is at ${w.percentUsed}%${resets(w)}.` +
-          `${gateLine} Start no new optional work, finish what is in flight, keep the handoff current, and tell the user.`)
+          `${gateLine} Start no new optional work, finish what is in flight, keep the handoff current, and tell the user.`))
       }
     }
 
@@ -163,10 +185,10 @@ export const register: Register = (on, options) => {
       await update($, warned, all => ({ ...all, [key]: { level, resetsAt: w.resetsAt ?? '' } }))
       $.ui.toast(`Usage: ${paceFacts(pace)} (limit ${paceMargin}). New subagents are refused until ${pace.until} if usage stays flat.`)
       if (tellModelAt > 0) {
-        await update($, note, pending =>
-          `${pending ? `${pending} ` : ''}usage-budget: ${paceFacts(pace)} (limit ${paceMargin}). New subagent spawns are refused ` +
+        await update($, note, pending => addNote(pending,
+          `usage-budget: ${paceFacts(pace)} (limit ${paceMargin}). New subagent spawns are refused ` +
           `until ${pace.until} (UTC) if usage stays flat. Start no new optional work, finish what is in flight, ` +
-          'keep the handoff current, and tell the user.')
+          'keep the handoff current, and tell the user.'))
       }
     }
 
@@ -191,8 +213,12 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e)) // never in the way of a tool call: replays what already ran
 
   on('agent.spawn', async ($, e, next) => {
+    if (gate <= 0 && paceMargin <= 0) {
+      return next(e)
+    }
+
+    const { rateLimits } = await $.session.usage()
     if (gate > 0) {
-      const { rateLimits } = await $.session.usage()
       const over = rateLimits.find(w => w.percentUsed >= gate)
       if (over) {
         return {
@@ -204,7 +230,6 @@ export const register: Register = (on, options) => {
     }
 
     if (paceMargin > 0) {
-      const { rateLimits } = await $.session.usage()
       if (rateLimits.some(w => w.kind === 'seven_day' && w.resetsAt)) {
         const now = await $.clock.now()
         for (const w of rateLimits) {
@@ -213,8 +238,8 @@ export const register: Register = (on, options) => {
             return {
               deny:
                 `usage-budget: ${paceFacts(pace)} (limit ${paceMargin} points). New subagents are refused until ${pace.until} ` +
-                "(UTC) if usage stays flat. Spawn none; finish the work in hand, write the handoff, and tell the user. Erik's OK, " +
-                'or waiting until that time, lifts it.',
+                '(UTC) if usage stays flat. Spawn none; finish the work in hand, write the handoff, and tell the user. ' +
+                "Waiting until then lifts it, and so does the user setting this plugin's paceMargin option to 0.",
             }
           }
         }

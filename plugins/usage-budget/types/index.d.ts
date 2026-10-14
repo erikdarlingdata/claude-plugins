@@ -3,6 +3,6 @@ export type Warned = { level: number; resetsAt: string }
 
 declare module 'claude-code' {
   interface PluginState {
-    'usage-budget': { warned: Record<string, Warned>; note: string | null }
+    'usage-budget': { warned: Record<string, Warned>; note: string | null; writeFailed: boolean }
   }
 }

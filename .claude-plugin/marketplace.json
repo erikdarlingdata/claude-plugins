@@ -168,7 +168,7 @@
       "displayName": "Subagent Band",
       "source": "./plugins/subagent-band",
       "description": "A band above the prompt with each running subagent's type, model, effort, steps, context, advisor calls and estimated cost, plus a /fleet pane, /steer, /subagent-cost and a subagent_vitals tool.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": {
         "name": "Erik Darling",
         "email": "erik@erikdarling.com",
@@ -198,7 +198,7 @@
       "displayName": "Usage Budget",
       "source": "./plugins/usage-budget",
       "description": "Warns as the account's 5-hour and 7-day usage windows fill, tells the model as they near the limit, and refuses new subagents past a set percent.",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "author": {
         "name": "Erik Darling",
         "email": "erik@erikdarling.com",
