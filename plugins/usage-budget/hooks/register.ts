@@ -116,6 +116,9 @@ async function writeLatest($: EngineInterface, options: PluginOptions, rateLimit
   }
 }
 
+// The file gives elapsed and ahead to a tenth of a point, as the toast does, not as raw floating point.
+const roundPace = (p: Pace | null) => (p ? { ...p, elapsed: Math.round(p.elapsed * 10) / 10, ahead: Math.round(p.ahead * 10) / 10 } : null)
+
 async function writeBody($: EngineInterface, path: string, rateLimits: SessionRateLimit[], paceMargin: number) {
 
   const now = await $.clock.now()
@@ -123,7 +126,7 @@ async function writeBody($: EngineInterface, path: string, rateLimits: SessionRa
   const body = {
     at: new Date(now).toISOString(),
     rateLimits: rateLimits.map(w => ({ kind: w.kind, percentUsed: w.percentUsed, resetsAt: w.resetsAt ?? null })),
-    pace: week ? paceOf(week, now, paceMargin) : null,
+    pace: roundPace(week ? paceOf(week, now, paceMargin) : null),
   }
   await $.fs.write(path, `${JSON.stringify(body, null, 2)}\n`)
 }

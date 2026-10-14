@@ -250,7 +250,7 @@ needs the numbers, for example to log a usage check:
 
 `at` is the UTC time of the write. `resetsAt` is null when the window has no reset time. `pace` is null
 unless 7-day usage runs at least `paceMargin` points ahead of the week. Then it holds the figures the pace
-warning gives, and `until` is the UTC minute the refusal lifts if usage stays flat. Each write replaces
+warning gives (elapsed and ahead to a tenth of a point), and `until` is the UTC minute the refusal lifts if usage stays flat. Each write replaces
 the file, so it holds only the latest figures. The write is not atomic, so a reader that gets JSON it
 cannot parse should read again. A failed write never stops the plugin. The first one in a session raises
 a toast with the path and the reason, so the file does not go stale without a word. If the reason is a

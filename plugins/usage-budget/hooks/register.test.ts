@@ -283,3 +283,11 @@ test('a negative option falls back to its default instead of turning the check o
   const refused = await $.agent.spawn({ prompt: 'x', description: 'x', subagentType: 'builder' })
   expect(refused.deny).toMatch(/at or past the 95% limit/)
 })
+
+test('the file gives elapsed and ahead to a tenth of a point', async ($, on) => {
+  engine(on, [], SIXTY_PERCENT + 7 * 60 * 1000) // 7 minutes later: elapsed 60.069...%
+  const written = files(on, { CLAUDE_CONFIG_DIR: 'C:/Home/.claude' })
+  await $.session.measure(measure([{ kind: 'seven_day', percentUsed: 75, resetsAt: '2026-10-08T00:00:00Z' }]) as never)
+  const pace = JSON.parse(written.get('C:/Home/.claude/usage-budget/latest.json') ?? 'null').pace
+  expect(pace).toMatchObject({ used: 75, elapsed: 60.1, ahead: 14.9 })
+})
