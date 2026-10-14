@@ -32,7 +32,7 @@ reloading their parent session.
 | `bang-notify.ts` | Wake Pi when a contextual `!` command finishes; learn command completions | `~/.pi/agent/bang-notify.json`; history in `bang-history.json` |
 | `settle-bell.ts` | Ring BEL on `agent_settled` | Configure the terminal's bell/attention behavior |
 | `refusal-fallback.ts` | Retry an approved false-positive provider refusal on another model | Edit constants in the source |
-| `cache-tuning.ts` | Prompt-cache fixes for long-lived sessions on Anthropic models: 1-hour cache for the main session, two workarounds (needed before pi 1.2.0) for a pi bug that changes the system prompt, a keep-warm for idle sessions, and a per-request debug log | `PI_CACHE_KEEPWARM=0`, `PI_CACHE_KEEPWARM_HOURS`, `PI_CACHE_DEBUG=0`; log in `~/.pi/agent/cache-debug/`; report `recipes/scripts/cache-debug-report.py` |
+| `cache-tuning.ts` | Prompt-cache fixes for long-lived sessions on Anthropic models: 1-hour cache for the main session, two workarounds (needed before pi 1.2.0) for a pi bug that changes the system prompt, a keep-warm for idle sessions, and a per-request debug log | `PI_CACHE_KEEPWARM=0`, `PI_CACHE_KEEPWARM_HOURS`, `PI_CACHE_DEBUG=0`. Log in `~/.pi/agent/cache-debug/`. Report: `recipes/scripts/cache-debug-report.py` |
 | `subagent-cost.ts` | Session and subagent spend: footer chip by agent type and thinking level, machine-wide ledger, `/subagent-cost` reports | `/subagent-cost [types\|agents\|sessions\|issues\|daily] [session\|today\|week\|<N>d\|<N>h] [session:<name\|id\|this\|all>]`; ledger in `~/.pi/agent/subagent-ledger/` |
 
 ## subagent-cost.ts

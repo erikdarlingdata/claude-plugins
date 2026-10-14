@@ -91,7 +91,7 @@ cache behavior, and prices even when model names look similar.
 
 | Route | Setup | Billing / limits |
 | --- | --- | --- |
-| ChatGPT subscription | `/login` → OpenAI → "Sign in with ChatGPT" | Codex subscription route; officially endorsed by OpenAI. The older provider is now named "OpenAI Codex (legacy)" |
+| ChatGPT subscription | `/login` → OpenAI → "Sign in with ChatGPT" | Codex subscription route, officially endorsed by OpenAI. The older provider is now named "OpenAI Codex (legacy)" |
 | Direct OpenAI API | `/login` with an API key, or `OPENAI_API_KEY` | OpenAI API billing and quotas |
 | OpenRouter | `/login` → OpenRouter | OpenRouter routing, billing, and provider behavior |
 
@@ -176,7 +176,7 @@ note in section 6.
 ### Compaction budget on large-context models
 
 Pi caps the compaction summary at `min(0.8 × compaction.reserveTokens, model
-maxTokens)` (checked against Pi 0.87.0's `compaction.js`; the formula still holds in 1.2.0). The default
+maxTokens)` (checked against Pi 0.87.0's `compaction.js`, and still true in 1.2.0). The default
 `reserveTokens` is 16384, so the summary gets about 13K output tokens. Compaction
 also runs at the session's current thinking level, and reasoning tokens count
 against that same cap. A long session on a 1M-context model at `xhigh` can use up
