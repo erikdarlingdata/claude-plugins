@@ -190,3 +190,73 @@ test('tellModelAtPercent 0 never tells the model', { options: { tellModelAtPerce
   expect(toasts.length).toBe(1)
   expect((await $.tool.call(bash())).context ?? []).toEqual([])
 })
+
+// The latest figures file: env.get answers from `env`, and fs.write records each write (or throws when `fail` is set).
+const files = (on: On, env: Record<string, string>, fail = false) => {
+  const written = new Map<string, string>()
+  on('env.get', async (_$, e) => ({ value: env[(e as { name: string }).name] }) as never)
+  on('fs.write', async (_$, e) => {
+    const { path, text } = e as unknown as { path: string; text: string }
+    if (fail) throw new Error('EACCES: permission denied')
+    written.set(path.split('\\').join('/'), text) // the engine hands the path over in the OS's own form
+    return { value: undefined } as never
+  })
+  return written
+}
+
+test('a measure with rate limits writes the latest figures to <config>/usage-budget/latest.json', async ($, on) => {
+  engine(on, [], SIXTY_PERCENT)
+  const written = files(on, { CLAUDE_CONFIG_DIR: 'C:\\Home\\.claude\\' })
+  await $.session.measure(measure([{ kind: 'five_hour', percentUsed: 41 }, sevenDay(75)]) as never)
+
+  expect([...written.keys()]).toEqual(['C:/Home/.claude/usage-budget/latest.json'])
+  const text = written.get('C:/Home/.claude/usage-budget/latest.json') ?? ''
+  expect(text.endsWith('}\n')).toBe(true)
+  expect(text).toContain('\n  "rateLimits": [\n')
+  const body = JSON.parse(text)
+  expect(body.at).toBe(new Date(SIXTY_PERCENT).toISOString())
+  expect(body.rateLimits).toEqual([
+    { kind: 'five_hour', percentUsed: 41, resetsAt: null },
+    { kind: 'seven_day', percentUsed: 75, resetsAt: RESETS },
+  ])
+  expect(body.pace.used).toBe(75)
+  expect(Math.abs(body.pace.elapsed - 60)).toBeLessThan(1e-6)
+  expect(Math.abs(body.pace.ahead - 15)).toBeLessThan(1e-6)
+  expect(body.pace.until).toBe('2026-10-05 13:12Z')
+})
+
+test('the file falls back to the home folder, has pace null under the margin, and waits for rate limits', async ($, on) => {
+  engine(on, [], SIXTY_PERCENT)
+  const written = files(on, { USERPROFILE: 'C:/Users/someone' })
+  await $.session.measure(measure([]) as never)
+  expect(written.size).toBe(0)
+
+  await $.session.measure(measure([sevenDay(65)]) as never)
+  expect(JSON.parse(written.get('C:/Users/someone/.claude/usage-budget/latest.json') ?? 'null')).toMatchObject({
+    rateLimits: [{ kind: 'seven_day', percentUsed: 65, resetsAt: RESETS }],
+    pace: null,
+  })
+})
+
+test('usage_file moves the file', { options: { usage_file: ' D:\\Shared\\usage.json ' } }, async ($, on) => {
+  engine(on, [], SIXTY_PERCENT)
+  const written = files(on, { CLAUDE_CONFIG_DIR: 'C:/Home/.claude' })
+  await $.session.measure(measure([sevenDay(50)]) as never)
+  expect([...written.keys()]).toEqual(['D:/Shared/usage.json'])
+})
+
+test('an empty usage_file writes nothing, and the warnings still fire', { options: { usage_file: '' } }, async ($, on) => {
+  const toasts = engine(on, [], SIXTY_PERCENT)
+  const written = files(on, { CLAUDE_CONFIG_DIR: 'C:/Home/.claude' })
+  await $.session.measure(measure([sevenDay(86)]) as never)
+  expect(written.size).toBe(0)
+  expect(toasts[0]).toMatch(/7-day window is at 86%/)
+})
+
+test('a write that throws does not fail the measure or toast, and the warnings still fire', async ($, on) => {
+  const toasts = engine(on, [], SIXTY_PERCENT)
+  files(on, { CLAUDE_CONFIG_DIR: 'C:/Home/.claude' }, true)
+  const result = await $.session.measure(measure([{ kind: 'five_hour', percentUsed: 71, resetsAt: '2026-10-05T09:00:00Z' }]) as never)
+  expect(result).toEqual({ changed: ['rateLimits'] })
+  expect(toasts).toEqual(['Usage: the 5-hour window is at 71% (resets 2026-10-05 09:00Z)'])
+})

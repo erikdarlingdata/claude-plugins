@@ -198,7 +198,7 @@
       "displayName": "Usage Budget",
       "source": "./plugins/usage-budget",
       "description": "Warns as the account's 5-hour and 7-day usage windows fill, tells the model as they near the limit, and refuses new subagents past a set percent.",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "author": {
         "name": "Erik Darling",
         "email": "erik@erikdarling.com",

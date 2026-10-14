@@ -232,6 +232,28 @@ the elapsed share, and the UTC time the refusal lifts if usage stays flat: the m
 within the margin. The refusal says that Erik's OK, or waiting until then, lifts it; the plugin itself only
 refuses, and `paceMargin` 0 turns the check off. Without a reset time for the window, the check is skipped.
 
+The status line shows the percents, but a session cannot read its own status line. So the plugin also
+writes the figures to `<config>/usage-budget/latest.json` each time they come in. `<config>` is
+`CLAUDE_CONFIG_DIR`, or else the `.claude` folder in your home folder. A session reads that file when it
+needs the numbers, for example to log a usage check:
+
+```json
+{
+  "at": "2026-10-14T04:48:00.000Z",
+  "rateLimits": [
+    { "kind": "five_hour", "percentUsed": 41, "resetsAt": "2026-10-14T08:00:00Z" },
+    { "kind": "seven_day", "percentUsed": 75, "resetsAt": "2026-10-17T00:00:00Z" }
+  ],
+  "pace": { "used": 75, "elapsed": 60, "ahead": 15, "until": "2026-10-14 13:12Z" }
+}
+```
+
+`at` is the UTC time of the write. `resetsAt` is null when the window has no reset time. `pace` is null
+unless 7-day usage runs at least `paceMargin` points ahead of the week. Then it holds the figures the pace
+warning gives, and `until` is the UTC minute the refusal lifts if usage stays flat. Each write replaces
+the file, so it holds only the latest figures. A failed write is skipped without a word, and the plugin
+goes on as before.
+
 ```
 /plugin install usage-budget@erikdarling
 ```
@@ -242,6 +264,7 @@ refuses, and `paceMargin` 0 turns the check off. Without a reset time for the wi
 | `tellModelAtPercent` | 85 | From here the model is told as well. 0 never tells it. |
 | `spawnGatePercent` | 95 | A new subagent is refused when either window is at or past this. 0 turns the refusal off. |
 | `paceMargin` | 10 | Points the 7-day usage may run ahead of the share of the week passed before the warning and the refusal. 0 turns the pace check off. |
+| `usage_file` | `<config>/usage-budget/latest.json` | Where the latest figures are written. A leading `<config>` stands for the Claude config folder. An empty value turns the file off. |
 
 ### `subagent-wall`
 
