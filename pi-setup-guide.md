@@ -167,11 +167,16 @@ bill is cache writes, not output. Measured on one week of such sessions (pi
   extension, pi-memory) disappeared and came back, and each change rewrote
   the whole conversation. pi 1.2.0 fixes this.
 - pi-lens injects one-time messages that the next request does not have.
+- pi-memory keeps one memory snapshot per pi process, and pi-subagents runs
+  its children in the parent's process. Each subagent that loads pi-memory
+  refreshes the snapshot at its start, so the parent's next request has a new
+  system prompt and rewrites the whole conversation. Measured on pi 1.2.0:
+  25 full rewrites in 24 hours, most from one session with an hourly subagent.
 
 The `cache-tuning.ts` recipe (section 14) covers the first, adds a
 keep-warm for idle sessions and logs the cause of every full rewrite. On pi
-before 1.2.0 it also works around the second. For the third, see the pi-lens
-note in section 6.
+before 1.2.0 it also works around the second. For the third and fourth, see
+the pi-lens and pi-memory notes in section 6.
 
 ### Compaction budget on large-context models
 
@@ -366,6 +371,13 @@ run. `pi-mcp-adapter` is an alternative. If you keep it, add `-builtin:mcp` to
 
 Pi also ships `codemode` and `tool_search` built-in extensions. See
 `docs/codemode.md` in the Pi docs (section 11).
+
+If you use pi-memory with pi-subagents, keep pi-memory out of subagents. Add
+`exclude_extensions: [pi-memory]` to each agent file in `~/.pi/agent/agents/`
+that loads extensions with `"*"`. Subagents then lose the memory tools and the
+memory block, and the parent's prompt cache survives each spawn. Only add it
+where pi-memory is installed: pi-subagents warns about an exclude that matches
+no extension.
 
 In long-running sessions on a cached model, turn off pi-lens context injection
 with `{"contextInjection": {"enabled": false}}` in `~/.pi-lens/config.json`.

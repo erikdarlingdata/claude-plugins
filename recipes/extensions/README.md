@@ -178,13 +178,17 @@ header. All of it changes the provider request only, never the transcript.
    unchanged" (the provider dropped the cache), the block that changed, or a
    reload.
 
-Two related settings that are not in the extension:
+Three related settings that are not in the extension:
 
 - **pi-lens context injection.** pi-lens adds one-time messages (start-up
   guidance, turn-end findings) to a single request and does not save them, so
   the next request differs at that point and the rest is rewritten. In long
   sessions, set `{"contextInjection": {"enabled": false}}` in
   `~/.pi-lens/config.json`. Its tools, LSP and read guard keep working.
+- **pi-memory in subagents.** pi-memory keeps one snapshot per process, and
+  in-process subagents share it. Each subagent start refreshes it, so the
+  parent's system prompt changes and its whole conversation is rewritten. Add
+  `exclude_extensions: [pi-memory]` to agent files that load `"*"`.
 - **Changing the thinking level for one turn** keeps the cache on models
   where pi sends effort as a mid-conversation message (Opus 5.5:
   `supportsMidConvoEffort`). On a model without it, a level change rewrites

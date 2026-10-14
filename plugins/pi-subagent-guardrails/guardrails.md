@@ -96,15 +96,12 @@ Name models by tier and moving alias, never by an explicit version. A pinned ver
 
 ## 4. Session length
 
-- **No seat session past ~250k context or ~8 hours, whichever comes first.** At either limit, or at any wave
-  boundary:
-  1. write a handoff file (state, ranked queue, what's in flight, what not to touch);
-  2. tell the operator;
-  3. start a fresh session.
-
-  Don't wait for compaction to force it (retrying a stalled compaction on a huge context is a time sink of its own).
-- **Coordinator sessions have more leeway.** At ~900k, a coordinator writes a handoff to a sub-coordinator and
-  re-surfaces only to report when that completes.
+- **Top-level sessions have no context or time limit.** A top-level session is one the operator talks to
+  directly: a coordinator or any named seat. It keeps a current handoff file (state, ranked queue, what is in
+  flight, what not to touch) and rewrites it at each boundary, so compaction is always safe. It works through
+  compaction. It never stops because it is "too big", never starts a successor session, and never asks the
+  operator to open one. If a compaction stalls, do not retry it on the huge context: refresh the handoff and
+  let the next compaction read it.
 - **Subagents** write a handoff at ~150k tokens; one that passes ~300k is stopped. On pi the child is told directly:
   `[context-wall]` notices at 150k and 200k, and at 250k every tool except git/gh and `.md`/`.txt` writes is refused,
   so it can still commit and report. Wall clock: 30 minutes where the pi watchdog enforces it, so size pi briefs to
@@ -179,7 +176,7 @@ at or below these rules. The pi settings below are the recommended ones; the plu
   agent file or a threshold names the agent-report number it should move, and the next wave's report checks it.
 - **Claude Code has no watchdog.** Every rule here is honor system there.
 
-**Honor system everywhere:** the 8-subagent cap where no harness enforces it, follow-up discipline, seat session length, the
+**Honor system everywhere:** the 8-subagent cap where no harness enforces it, follow-up discipline, current handoff files, the
 standing-prompt cap, and ranking. Name any violation in the next handoff.
 
 ## Tool names: pi and Claude Code
