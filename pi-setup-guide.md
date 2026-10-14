@@ -3,7 +3,7 @@
 A short path from a clean machine to a comfortable Pi daily driver, followed by
 optional operations and extension recipes.
 
-**Last verified:** 2026-09-21 · **Pi:** 0.86.1 · **Primary test setup:** macOS,
+**Last verified:** 2026-10-14 · **Pi:** 1.2.0 · **Primary test setup:** macOS,
 Ghostty, npm 11.17.0, OpenRouter. Core Pi works on Linux and Windows too; macOS-
 and terminal-specific steps are labeled.
 
@@ -22,15 +22,26 @@ your user permissions.
 ## 1. Install and first run
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+curl -fsSL https://pi.dev/install.sh | sh
 cd /path/to/a/project
 pi
+```
+
+The installer works on macOS and Linux. It pins dependencies, and `pi update`
+updates the managed install. It keeps the new release and the one before it
+under `~/.pi/agent/install/releases/`.
+
+The npm install is the alternative. It needs Node 22.19 or newer and does not
+pin transitive dependencies:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 ```
 
 Pi does not require npm lifecycle scripts for a normal install.
 
 On first run, use `/login` to authenticate. Built-in subscription logins include
-ChatGPT Plus/Pro (Codex), Claude Pro/Max, GitHub Copilot, and others. API-key
+"Sign in with ChatGPT" (under the OpenAI provider), Claude Pro/Max, GitHub Copilot, and others. API-key
 providers can use `/login`, environment variables, or `~/.pi/agent/auth.json`.
 That file contains secrets, is created mode `0600`, and must never be committed.
 
@@ -80,7 +91,7 @@ cache behavior, and prices even when model names look similar.
 
 | Route | Setup | Billing / limits |
 | --- | --- | --- |
-| ChatGPT subscription | `/login` → ChatGPT Plus/Pro (Codex) | Codex subscription route; officially endorsed by OpenAI |
+| ChatGPT subscription | `/login` → OpenAI → "Sign in with ChatGPT" | Codex subscription route, officially endorsed by OpenAI. The older provider is now named "OpenAI Codex (legacy)" |
 | Direct OpenAI API | `/login` with an API key, or `OPENAI_API_KEY` | OpenAI API billing and quotas |
 | OpenRouter | `/login` → OpenRouter | OpenRouter routing, billing, and provider behavior |
 
@@ -89,9 +100,10 @@ invent Anthropic-style thinking-token budgets for direct OpenAI models; use the
 catalog's supported effort levels unless a custom compatible endpoint explicitly
 requires a token-budget field.
 
-Direct OpenAI GPT-5.6 Sol, Terra, and Luna intentionally default to a **272K**
-context window to remain inside OpenAI's short-context pricing tier. A larger
-window is an advanced opt-in:
+Direct OpenAI GPT-5.6 and GPT-6 models (Sol, Terra, Luna, Astra, and GPT-6.1
+Sol) intentionally default to a **272K** context window to remain inside
+OpenAI's short-context pricing tier. A larger window is an advanced opt-in.
+Put this in `~/.pi/agent/models.json`, not `settings.json`:
 
 ```json
 {
@@ -129,8 +141,11 @@ session's own spend plus its agents' across the machine, use the
 `subagent-cost.ts` recipe (section 14).
 
 `cacheWarming` is `off`, `streaming`, or `idle` and defaults to `streaming`.
-Direct OpenAI currently has no built-in cache-lifetime metadata for Pi's warmer,
-so warming may report unavailable even when provider-side prompt caching exists.
+Warming needs a `promptCache` lifetime on the model. The bundled catalog sets
+it only for direct Anthropic models. Direct OpenAI has none, so warming may
+report unavailable even when provider-side prompt caching exists. OpenRouter
+models have none either. You can declare one with a `modelOverrides` entry
+in `models.json`.
 `PI_CACHE_RETENTION=long` requests longer retention where supported; inspect
 `/session` rather than assuming it took effect. `long` is the only value that
 changes anything; unset or any other value means the 5-minute cache. On
@@ -145,21 +160,23 @@ bill is cache writes, not output. Measured on one week of such sessions (pi
   default 5-minute cache. The 1-hour cache fixes waits under an hour. pi's
   idle warming stops 30 minutes after the last request, so it does not cover
   longer waits.
-- pi does not run `before_agent_start` for runs started by a notification
+- Before pi 1.2.0, pi did not run `before_agent_start` for runs started by a
+  notification
   ([earendil-works/pi#10267](https://github.com/earendil-works/pi/issues/10267)).
   Prompt text that extensions add there (pi-background-tasks, the agent-browser
-  extension, pi-memory) disappears and comes back, and each change rewrites
-  the whole conversation.
+  extension, pi-memory) disappeared and came back, and each change rewrote
+  the whole conversation. pi 1.2.0 fixes this.
 - pi-lens injects one-time messages that the next request does not have.
 
-The `cache-tuning.ts` recipe (section 14) covers the first two, adds a
-keep-warm for idle sessions and logs the cause of every full rewrite. For the
-third, see the pi-lens note in section 6.
+The `cache-tuning.ts` recipe (section 14) covers the first, adds a
+keep-warm for idle sessions and logs the cause of every full rewrite. On pi
+before 1.2.0 it also works around the second. For the third, see the pi-lens
+note in section 6.
 
 ### Compaction budget on large-context models
 
 Pi caps the compaction summary at `min(0.8 × compaction.reserveTokens, model
-maxTokens)` (checked against Pi 0.87.0's `compaction.js`). The default
+maxTokens)` (checked against Pi 0.87.0's `compaction.js`, and still true in 1.2.0). The default
 `reserveTokens` is 16384, so the summary gets about 13K output tokens. Compaction
 also runs at the session's current thinking level, and reasoning tokens count
 against that same cap. A long session on a 1M-context model at `xhigh` can use up
@@ -169,7 +186,9 @@ the budget before the summary finishes:
 Error: Compaction failed: Summarization failed: generation hit the token cap and the summary is incomplete
 ```
 
-Retrying fails the same way every time. Give large-context models a bigger
+Retrying fails the same way every time. Pi 1.2.0 leaves thinking blocks out of
+the compaction input, which shrinks the request. Keep the reserve advice below.
+Give large-context models a bigger
 reserve with a per-model override; keys are exact `provider/modelId` values:
 
 ```json
@@ -204,7 +223,7 @@ Recommended defaults:
 - Use `pi -a` to trust project resources for one run or `pi -na` to ignore them.
 
 Trust protects project `.pi/settings.json`, `.pi/extensions|skills|prompts|themes`,
-`.pi/SYSTEM.md`, `.pi/APPEND_SYSTEM.md`, project packages, and project
+`.pi/SYSTEM.md`, `.pi/APPEND_SYSTEM.md`, project `.pi/mcp.json`, project packages, and project
 `.agents/skills`. **Context files still load regardless of trust**:
 `AGENTS.override.md`, `AGENTS.md`, and `CLAUDE.md` can all influence the model.
 Treat instructions in an untrusted clone as untrusted input.
@@ -216,10 +235,11 @@ pass `--approve` explicitly when automation requires them.
 Useful containment and recovery modes:
 
 ```bash
-# Read-only built-ins
-pi --tools read,grep,find,ls
+# Read-only built-ins. --tools keeps MCP tools, so add --no-mcp
+pi --tools read,grep,find,ls --no-mcp
 
-# Start without any discovered extensions
+# Start without any discovered extensions (this also turns off the
+# built-in extensions, MCP included)
 pi --no-extensions
 
 # Disable all discovered extensions, then load exactly one
@@ -250,30 +270,31 @@ Bundled examples worth knowing:
 | `/compact`, continue, resume | `/compact`, `pi -c`, `pi -r`, `pi --session <path-or-id>` |
 | `/btw` | Type while Pi works: Enter steers after the current tool call; Alt+Enter queues a follow-up |
 | Checkpoints / rewind | Double-Escape or `/tree`; `/fork` and `/clone` branch session history |
-| MCP | `pi-mcp-adapter` package |
+| MCP | Built in: `/mcp`, `pi mcp add`, config in `~/.pi/agent/mcp.json` |
 | Ephemeral chat | `pi --no-session` |
 
 ## 5. Terminal ergonomics
 
 ### Fullscreen and copying
 
-Try fullscreen for one session:
+Fullscreen is the default since Pi 1.0.0. For normal terminal scrollback, use
+regular mode for one session:
 
 ```bash
-pi --tui-mode fullscreen
+pi --tui-mode regular
 ```
 
 Persist it through `/settings` or:
 
 ```json
-{ "tuiMode": "fullscreen" }
+{ "tuiMode": "regular" }
 ```
 
 `fullscreenCopyOnSelect` defaults to `true`. Ctrl+X copies the last assistant
 message, the selected `/tree` message, or an active fullscreen selection when
 auto-copy is disabled.
 
-Fullscreen is still marked experimental. Pi owns the screen, so terminal-native
+In fullscreen, Pi owns the screen, so terminal-native
 scrollback/search/selection give way to Pi's scroll region.
 
 ### Ghostty and modified Enter keys
@@ -336,9 +357,15 @@ stack.
 ```bash
 pi install npm:pi-lens
 pi install npm:pi-memory
-# Only if you use MCP:
-pi install npm:pi-mcp-adapter
 ```
+
+MCP is built in since Pi 1.0.0: use `/mcp` and `pi mcp add|list|login|logout|remove`.
+Servers live in `~/.pi/agent/mcp.json`, and `--no-mcp` turns them off for one
+run. `pi-mcp-adapter` is an alternative. If you keep it, add `-builtin:mcp` to
+`extensions` in `settings.json` so two MCP stacks do not run.
+
+Pi also ships `codemode` and `tool_search` built-in extensions. See
+`docs/codemode.md` in the Pi docs (section 11).
 
 In long-running sessions on a cached model, turn off pi-lens context injection
 with `{"contextInjection": {"enabled": false}}` in `~/.pi-lens/config.json`.
@@ -396,6 +423,7 @@ pi remove npm:<package>
 pi update --extensions         # update packages; pinned specs stay pinned
 pi update --models             # refresh model catalogs
 pi update --self               # update Pi only
+pi update --all                # update Pi and packages
 ```
 
 After installing a new package, a full restart is the safest path. `/reload`
@@ -410,6 +438,7 @@ Pi-subagents aborts its children during session shutdown.
 ```bash
 # Browser engine used by pi-agent-browser-native
 npm install -g agent-browser
+agent-browser install    # downloads Chrome for Testing (--with-deps on Linux)
 
 # Search backend used by pi-memory
 npm install -g @tobilu/qmd
@@ -431,6 +460,9 @@ npm install -g --allow-scripts=agent-browser agent-browser
 This is npm-version and registry-policy specific; `npm install --help` shows
 whether `--allow-scripts` is available.
 
+`pi-agent-browser-native` needs Node 24.21 or newer and Pi 1.0.0 or newer. Any
+stable agent-browser 0.35.0 or later works with it.
+
 ## 8. Verify the setup
 
 Start with deterministic inventory and recovery checks:
@@ -439,9 +471,11 @@ Start with deterministic inventory and recovery checks:
 pi --version
 pi list
 pi -p "Reply exactly: OK"
-pi --tools read,grep,find,ls -p "List the repository's top-level files"
+pi --tools read,grep,find,ls --no-mcp -p "List the repository's top-level files"
 pi --no-extensions -p "Reply exactly: SAFE_MODE_OK"
 ```
+
+`pi -p` exits 1 when the reply is cut off at the output limit.
 
 Then verify only the profiles you installed:
 
@@ -476,6 +510,10 @@ inventory.
 | Ctrl+G / Ctrl+V | External editor / paste image or text |
 | Ctrl+X | Copy last assistant reply or selected tree message |
 | Ctrl+O / Ctrl+T | Toggle tool output / thinking visibility |
+| `/new` / `/resume` | Start a new session / pick a previous one |
+| `/reload` | Re-read settings and local resources |
+| `/copy` | Copy the last assistant reply (alternative to Ctrl+X) |
+| `/trust` | Trust the current project directory |
 | `/export` / `/share` | HTML export / gist link |
 | `/hotkeys` | Show active keybindings |
 | `/bug` | Report a Pi issue with session diagnostics |
@@ -517,6 +555,10 @@ Global state:
 ~/.pi/agent/keybindings.json  key overrides
 ~/.pi/agent/models.json       custom models and overrides
 ~/.pi/agent/models-store.json refreshed provider catalogs
+~/.pi/agent/mcp.json          MCP servers (project: .pi/mcp.json)
+~/.pi/agent/SYSTEM.md         system prompt replacement (optional)
+~/.pi/agent/APPEND_SYSTEM.md  text appended to the system prompt (optional)
+~/.pi/agent/install/          managed install releases (installer only)
 ~/.pi/agent/sessions/         transcripts grouped by cwd
 ~/.pi/agent/extensions/       local extensions
 ~/.pi/agent/agents/           pi-subagents definitions
@@ -531,9 +573,10 @@ system-prompt files, package installs, and any package-specific directories.
 Credentials and trust decisions remain global. Sessions remain global unless
 `sessionDir` or `--session-dir` says otherwise.
 
-Official docs are under:
+Official docs are under one of these, depending on how you installed Pi:
 
 ```bash
+~/.pi/agent/install/releases/<version>/node_modules/@earendil-works/pi-coding-agent/docs
 "$(npm root -g)/@earendil-works/pi-coding-agent/docs"
 ```
 
@@ -546,6 +589,7 @@ pi update --extensions
 pi update --self
 ```
 
+A bare `pi update` updates Pi only. `pi update --all` updates Pi and packages.
 Versioned npm specs and git refs are pinned and do not move during ordinary
 package updates. Re-run §8 after updates. Keep `retry.provider.maxRetries` at
 `0` unless provider-level retries are intentional; otherwise SDK retries can
@@ -705,7 +749,8 @@ Available recipes:
   rebuilds the ledger from saved subagent sessions.
 - `cache-tuning.ts` — prompt-cache fixes for long-lived sessions on Anthropic
   models: 1-hour cache for the main session only, workarounds for prompt text
-  that disappears on notification runs (pi#10267), a keep-warm for idle
+  that disappears on notification runs (pi#10267, fixed in pi 1.2.0, so
+  needed only on older pi), a keep-warm for idle
   sessions, and a debug log of why each full cache rewrite happened
   (`recipes/scripts/cache-debug-report.py`).
 
@@ -731,7 +776,8 @@ Copy only what you want into `~/.pi/agent/extensions/`, review it first, and run
   User-entered `!` commands do not receive those variables.
 - **400 `configuration_update` / mid-conversation effort error:** first refresh
   models with `pi update --models`. If the catalog still overclaims
-  `supportsMidConvoEffort`, apply a model-specific `compat` override in
+  `supportsMidConvoEffort` (the 1.2.0 catalog no longer claims it for
+  `openrouter/anthropic/claude-opus-5`, so an override there is redundant), apply a model-specific `compat` override in
   `~/.pi/agent/models.json`; remove it once the upstream catalog is corrected.
 - **`Compaction failed: … hit the token cap`:** in the stuck session, run
   `/reload` if you just changed settings, then `/thinking` → `off`, `/compact`,
@@ -755,7 +801,9 @@ Platform references:
 - `docs/containerization.md`
 - `docs/security.md`
 
-Resolve those paths under:
+Resolve those paths under the managed install
+(`~/.pi/agent/install/releases/<version>/node_modules/@earendil-works/pi-coding-agent`)
+or, for an npm install:
 
 ```bash
 "$(npm root -g)/@earendil-works/pi-coding-agent"
