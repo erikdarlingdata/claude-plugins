@@ -10,7 +10,9 @@ const OPTS = { registry_dir: REG, sessions_dir: SES }
 const engineBottom = (on: On, env: Record<string, string> = {}) => {
   on('env.get', async (_$, e) => ({ value: env[(e as { name: string }).name] }) as never)
   const files = new Map<string, string>()
-  const norm = (path: string) => path.split('\\').join('/')
+  // On macOS and Linux a drive-letter path is not absolute, so the engine hands it over resolved against the plugin
+  // folder (<root>/C:/x). Dropping everything before the drive letter keeps these Windows fixtures valid there too.
+  const norm = (path: string) => path.split('\\').join('/').replace(/^.*\/(?=[A-Za-z]:\/)/, '')
   const session = { id: 's1' }
   on('fs.write', async (_$, e) => {
     const { path, text } = e as unknown as { path: string; text: string }

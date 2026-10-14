@@ -229,8 +229,8 @@ It also checks pace. When the 7-day usage runs 10 or more points ahead of the sh
 passed (70% used with 60% of the week gone), you get a toast and Claude gets a note, once per window and
 again each time the gap grows by another margin. New subagents are refused too. The message gives the usage,
 the elapsed share, and the UTC time the refusal lifts if usage stays flat: the moment the week catches up to
-within the margin. The refusal says that Erik's OK, or waiting until then, lifts it; the plugin itself only
-refuses, and `paceMargin` 0 turns the check off. Without a reset time for the window, the check is skipped.
+within the margin. Waiting until then lifts it, and so does setting `paceMargin` to 0, which turns the check
+off. Without a reset time for the window, the check is skipped.
 
 The status line shows the percents, but a session cannot read its own status line. So the plugin also
 writes the figures to `<config>/usage-budget/latest.json` each time they come in. `<config>` is
@@ -250,9 +250,11 @@ needs the numbers, for example to log a usage check:
 
 `at` is the UTC time of the write. `resetsAt` is null when the window has no reset time. `pace` is null
 unless 7-day usage runs at least `paceMargin` points ahead of the week. Then it holds the figures the pace
-warning gives, and `until` is the UTC minute the refusal lifts if usage stays flat. Each write replaces
-the file, so it holds only the latest figures. A failed write is skipped without a word, and the plugin
-goes on as before.
+warning gives (elapsed and ahead to a tenth of a point), and `until` is the UTC minute the refusal lifts if usage stays flat. Each write replaces
+the file, so it holds only the latest figures. The write is not atomic, so a reader that gets JSON it
+cannot parse should read again. A failed write never stops the plugin. The first one in a session raises
+a toast with the path and the reason, so the file does not go stale without a word. If the reason is a
+missing folder, create the folder once.
 
 ```
 /plugin install usage-budget@erikdarling
