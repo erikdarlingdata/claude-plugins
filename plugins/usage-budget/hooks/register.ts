@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register, SessionRateLimit } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register, SessionRateLimit } from 'claude-code'
 
 import type { Warned } from '../types'
 
@@ -65,6 +65,47 @@ const name = (kind: string) => NAMES[kind] ?? kind
 const short = (kind: string) => (kind === 'five_hour' ? '5h' : kind === 'seven_day' ? '7d' : kind)
 const resets = (w: SessionRateLimit) => (w.resetsAt ? ` (resets ${w.resetsAt.slice(0, 16).replace('T', ' ')}Z)` : '')
 
+const slashes = (p: string) => p.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+
+// Where the latest figures go: the usage_file option, where a leading <config> stands for CLAUDE_CONFIG_DIR or else
+// the .claude folder in the home folder (as seat-resume finds it). The option's default is
+// <config>/usage-budget/latest.json; an empty usage_file turns the file off: null.
+const DEFAULT_USAGE_FILE = '<config>/usage-budget/latest.json'
+
+async function usageFileOf($: EngineInterface, options: PluginOptions): Promise<string | null> {
+  const option = typeof options.usage_file === 'string' ? options.usage_file.trim() : DEFAULT_USAGE_FILE
+  if (!option) {
+    return null
+  }
+  if (!option.startsWith('<config>')) {
+    return slashes(option)
+  }
+
+  const configDir = await $.env.get('CLAUDE_CONFIG_DIR')
+  const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
+
+  return slashes(`${slashes(configDir || `${home}/.claude`)}${option.slice('<config>'.length)}`)
+}
+
+// The latest rate-limit figures as a small JSON file, so a session that cannot see its own status line (a coordinator
+// writing its usage checks) can read them. $.fs has no mkdir: the write is left to create the folder, and a failed
+// write is dropped, never thrown or toasted.
+async function writeLatest($: EngineInterface, options: PluginOptions, rateLimits: SessionRateLimit[], paceMargin: number) {
+  const path = await usageFileOf($, options)
+  if (!path) {
+    return
+  }
+
+  const now = await $.clock.now()
+  const week = rateLimits.find(w => w.kind === 'seven_day')
+  const body = {
+    at: new Date(now).toISOString(),
+    rateLimits: rateLimits.map(w => ({ kind: w.kind, percentUsed: w.percentUsed, resetsAt: w.resetsAt ?? null })),
+    pace: week ? paceOf(week, now, paceMargin) : null,
+  }
+  await $.fs.write(path, `${JSON.stringify(body, null, 2)}\n`)
+}
+
 export const register: Register = (on, options) => {
   const gate = Number(options.spawnGatePercent ?? 95)
   const thresholds = parsePercents(options.warnPercents ?? DEFAULT_THRESHOLDS.join(', '))
@@ -77,6 +118,7 @@ export const register: Register = (on, options) => {
   on('session.measure', async ($, e, next) => {
     if (e.rateLimits.length > 0) {
       $.ui.status(e.rateLimits.map(w => `${short(w.kind)} ${Math.round(w.percentUsed)}%`).join(' · '))
+      await writeLatest($, options, e.rateLimits, paceMargin).catch(() => undefined)
     }
 
     for (const w of e.rateLimits) {

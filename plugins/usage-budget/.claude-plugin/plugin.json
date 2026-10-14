@@ -1,6 +1,6 @@
 {
   "name": "usage-budget",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Warns as the account's 5-hour and 7-day usage windows fill, tells the model as they near the limit, refuses new subagents past a set percent, and warns and refuses them when 7-day usage runs ahead of the share of the week that has passed",
   "types": "./types/index.d.ts",
   "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },
@@ -32,6 +32,12 @@
       "title": "Pace margin (points)",
       "description": "When 7-day usage runs this many points or more ahead of the share of the week that has passed, you get a toast, the model gets a note, and new subagents are refused until the week catches up. 0 turns the pace check off.",
       "default": 10
+    },
+    "usage_file": {
+      "type": "string",
+      "title": "Latest usage file",
+      "description": "Each time the usage figures come in, they are also written to this JSON file, so a session can read them. A leading <config> stands for your Claude config folder (CLAUDE_CONFIG_DIR, else the .claude folder in your home folder). An empty value turns the file off.",
+      "default": "<config>/usage-budget/latest.json"
     }
   }
 }
