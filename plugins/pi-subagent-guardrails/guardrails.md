@@ -36,8 +36,8 @@ wakes is the bill.
 - **Workflow and multi-model fan-out tools need the operator's explicit ask every time** (see the tool table). A call that
   fans out to N models counts as N agents against the caps; a pi `fusion_*` call is 5.
 - **Finished agents stop; they don't idle.** Stop background tasks you no longer need. A seat whose queue is done
-  writes its handoff and exits instead of idling in a live session, where every incoming message re-reads its whole
-  context.
+  tells the operator and stops sending itself work. In a live session, every incoming message re-reads its whole
+  context. The operator decides whether to end the seat, and asks for a handoff when they do.
 
 ## 2. Model choice
 
@@ -97,11 +97,13 @@ Name models by tier and moving alias, never by an explicit version. A pinned ver
 ## 4. Session length
 
 - **Top-level sessions have no context or time limit.** A top-level session is one the operator talks to
-  directly: a coordinator or any named seat. It keeps a current handoff file (state, ranked queue, what is in
-  flight, what not to touch) and rewrites it at each boundary, so compaction is always safe. It works through
-  compaction. It never stops because it is "too big", never starts a successor session, and never asks the
-  operator to open one. If a compaction stalls, do not retry it on the huge context: refresh the handoff and
-  let the next compaction read it.
+  directly: a coordinator or any named seat. It works through compaction, and the compaction summary carries it.
+  It keeps no running handoff file. Measured on one fleet, handoff upkeep at every boundary cost about 5% of seat
+  spend, and the compaction summary, the daily log and PR text already held the same facts. It never stops because
+  it is "too big", never starts a successor session, and never asks the operator to open one.
+- **Write a handoff only when the operator asks or when work moves.** The operator asks when they end a seat. The
+  handoff lists the standing rules, where every artifact lives, the current state, the next steps and what not to
+  touch. Replies do not mention bookkeeping such as handoff or log updates.
 - **Subagents** write a handoff at ~150k tokens; one that passes ~300k is stopped. On pi the child is told directly:
   `[context-wall]` notices at 150k and 200k, and at 250k every tool except git/gh and `.md`/`.txt` writes is refused,
   so it can still commit and report. Wall clock: 30 minutes where the pi watchdog enforces it, so size pi briefs to
@@ -109,9 +111,9 @@ Name models by tier and moving alias, never by an explicit version. A pinned ver
   because a full test run alone takes ~10. The coordinator enforces it.
 - **Coordinators don't trust notifications for deadlines.** Set a wall-clock check at each lane's deadline (pi: a
   named `bg_run` `sleep` timer). At every agent report, check that the shared checkout is still clean.
-- **Rewrite the handoff file at each boundary; don't append to it.** Delete what is resolved and keep it under ~8 KB.
+- **Write a handoff fresh, and do not append to it.** Keep it under ~8 KB.
   An append-only handoff turned into a stale 150-line file that misled the next read.
-- **No open-ended "cook" loop.** Before a wave starts, write down in the wave's handoff file: the queue slice, the
+- **No open-ended "cook" loop.** Before a wave starts, write down in the wave plan: the queue slice, the
   agent count and models, the max wall-clock, and the stop point. Keeping work in flight never overrides these limits.
 - **Headless and scheduled runs** (`pi -p`, `claude -p`, cron or tmux ticks, loops, scheduled agents) start a fresh
   session each tick (`--no-session` on pi) with a hard timeout, and their prompt obeys the standing-prompt cap.
@@ -176,8 +178,8 @@ at or below these rules. The pi settings below are the recommended ones; the plu
   agent file or a threshold names the agent-report number it should move, and the next wave's report checks it.
 - **Claude Code has no watchdog.** Every rule here is honor system there.
 
-**Honor system everywhere:** the 8-subagent cap where no harness enforces it, follow-up discipline, current handoff files, the
-standing-prompt cap, and ranking. Name any violation in the next handoff.
+**Honor system everywhere:** the 8-subagent cap where no harness enforces it, follow-up discipline, no running handoff files, the
+standing-prompt cap, and ranking. Name any violation in the next report to the operator.
 
 ## Tool names: pi and Claude Code
 
