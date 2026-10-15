@@ -379,6 +379,11 @@ memory block, and the parent's prompt cache survives each spawn. Only add it
 where pi-memory is installed: pi-subagents warns about an exclude that matches
 no extension.
 
+The Agent tool reads the agent files again on each call. Scheduled subagent
+jobs do not. They use the agent files that the session loaded, until the
+session reloads or runs the Agent tool. After you change an agent file, run
+`/reload` in each session that has scheduled jobs.
+
 In long-running sessions on a cached model, turn off pi-lens context injection
 with `{"contextInjection": {"enabled": false}}` in `~/.pi-lens/config.json`.
 Its messages are sent once and not saved, so the next request rewrites the

@@ -188,7 +188,9 @@ Three related settings that are not in the extension:
 - **pi-memory in subagents.** pi-memory keeps one snapshot per process, and
   in-process subagents share it. Each subagent start refreshes it, so the
   parent's system prompt changes and its whole conversation is rewritten. Add
-  `exclude_extensions: [pi-memory]` to agent files that load `"*"`.
+  `exclude_extensions: [pi-memory]` to agent files that load `"*"`. Then run
+  `/reload` in sessions with scheduled subagent jobs. Scheduled jobs do not
+  read the agent files again by themselves.
 - **Changing the thinking level for one turn** keeps the cache on models
   where pi sends effort as a mid-conversation message (Opus 5.5:
   `supportsMidConvoEffort`). On a model without it, a level change rewrites
