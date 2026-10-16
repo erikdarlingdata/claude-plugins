@@ -172,11 +172,34 @@ bill is cache writes, not output. Measured on one week of such sessions (pi
   refreshes the snapshot at its start, so the parent's next request has a new
   system prompt and rewrites the whole conversation. Measured on pi 1.2.0:
   25 full rewrites in 24 hours, most from one session with an hourly subagent.
+- pi-memory also rebuilds its `## Memory` block after each long-term memory
+  write and at the start of a compaction. Each rebuild changes the system
+  prompt. Measured: 12 full rewrites in 52 hours across nine sessions.
 
 The `cache-tuning.ts` recipe (section 14) covers the first, adds a
 keep-warm for idle sessions and logs the cause of every full rewrite. On pi
-before 1.2.0 it also works around the second. For the third and fourth, see
-the pi-lens and pi-memory notes in section 6.
+before 1.2.0 it also works around the second. It holds the memory block for
+the fifth. For the third and fourth, see the pi-lens and pi-memory notes in
+section 6.
+
+### When to compact
+
+A compaction costs more than one ordinary request, but it pays back fast.
+Measured on Claude Opus 5.5 through OpenRouter, for contexts of 250k to 850k
+tokens:
+
+- The summary call does not use the cache, because pi sends the conversation
+  as text. It cost $0.67 to $2.60.
+- The first request afterwards writes the smaller context, about 110k tokens,
+  to the cache. It cost $0.55 to $0.85.
+- Each later request then reads less. At 500k before and 110k after, a request
+  costs about $0.08 less, and a later full rewrite about $3 less.
+
+So compact a long-running session between unrelated tasks. Do not let it grow
+to the automatic limit. The largest compactions cost the most and fail most
+often. Compact while the session is idle. A session that keeps working during a
+compaction can rewrite its whole old context once. If you also reload, compact
+first, then reload.
 
 ### Compaction budget on large-context models
 
@@ -768,7 +791,8 @@ Available recipes:
   models: 1-hour cache for the main session only, workarounds for prompt text
   that disappears on notification runs (pi#10267, fixed in pi 1.2.0, so
   needed only on older pi), a keep-warm for idle
-  sessions, and a debug log of why each full cache rewrite happened
+  sessions, a hold on pi-memory's prompt block after memory writes, and a debug
+  log of why each full cache rewrite happened
   (`recipes/scripts/cache-debug-report.py`).
 
 Copy only what you want into `~/.pi/agent/extensions/`, review it first, and run

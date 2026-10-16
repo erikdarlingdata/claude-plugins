@@ -67,6 +67,20 @@
  *    when a ping finds the cache gone. Each ping goes to the cache-debug log and
  *    to the subagent ledger as a seat line with thinking "(cache warm)".
  *    PI_CACHE_KEEPWARM=0 turns it off.
+ *
+ * 6. Hold the seat's pi-memory block (added 2026-10-15). pi-memory rebuilds its
+ *    "## Memory" block in the system prompt after a long-term memory write and
+ *    at the start of a compaction. Each rebuild changed the start of the prompt,
+ *    so the seat's whole conversation was written to cache again: 12 rewrites,
+ *    4.4M tokens, ~$16 a day (Oct 13-15). The seat already has the entry it
+ *    wrote in its conversation. So when the only change is inside the memory
+ *    block and its reason is long_term_write, or a compaction is running, this
+ *    sends the previous system text (request only; logged as
+ *    "memory-block-held"). It accepts the new block on the first request after
+ *    a load or a compaction, and on day_rollover so the dates stay right.
+ *    Seats only. PI_CACHE_MEMORY_HOLD=0 turns it off. Test (pi -ne, test memory
+ *    dir): with the hold, the prompt after a write wrote 13 tokens; without it,
+ *    20,929.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -188,6 +202,28 @@ function systemTextRef(payload: any): { get(): string; set(v: string): void } | 
 export function chooseSystemText(cur: string, typedRun: boolean, remembered: string | undefined): { text: string; remember?: string } {
 	if (typedRun) return { text: cur, remember: cur };
 	return remembered !== undefined && remembered !== cur ? { text: remembered } : { text: cur };
+}
+
+const MEMORY_HEADER = "\n\n## Memory\n";
+
+/**
+ * Fix 6: keep the seat's pi-memory block unchanged when the only change is a
+ * refresh the seat does not need in its prompt. Returns the text to send and
+ * the text to hold for the next request.
+ * - acceptAll (first request after load or after a compaction): send cur.
+ * - The change must start inside the memory block (everything before the
+ *   "## Memory" header identical); otherwise it is a real change: send cur.
+ * - During a compaction (pi-memory refreshes at its start), or when the new
+ *   snapshot reason is long_term_write: send the held text.
+ * - Any other reason (day_rollover keeps the dates right): send cur.
+ */
+export function chooseMemoryHold(cur: string, held: string | undefined, opts: { acceptAll: boolean; compacting: boolean }): { text: string; held: string; action?: string; reason?: string } {
+	if (opts.acceptAll || held === undefined || held === cur) return { text: cur, held: cur };
+	const hdr = cur.indexOf(MEMORY_HEADER);
+	if (hdr < 0 || held.indexOf(MEMORY_HEADER) !== hdr || held.slice(0, hdr) !== cur.slice(0, hdr)) return { text: cur, held: cur, action: "accepted", reason: "change outside memory" };
+	const reason = /\(Snapshot (\w+) at /.exec(cur.slice(hdr, hdr + 200))?.[1] ?? "unknown";
+	if (opts.compacting || reason === "long_term_write") return { text: held, held, action: "held", reason };
+	return { text: cur, held: cur, action: "accepted", reason };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -342,15 +378,28 @@ export default function (pi: ExtensionAPI) {
 			return undefined;
 		});
 	}
+	// fix 6 state: the system text last sent (seat only)
+	const memoryHold = process.env.PI_CACHE_MEMORY_HOLD !== "0";
+	let heldSystem: string | undefined;
+	let compacting = false;
+	let acceptNext = true;
+	pi.on("session_start", async () => {
+		acceptNext = true;
+		compacting = false;
+	});
 	pi.on("session_before_compact", async (event: any) => {
+		compacting = true;
 		if (debug) log({ type: "compact-start", reason: event?.reason });
 		return undefined;
 	});
 	pi.on("session_compact", async (event: any) => {
+		compacting = false;
+		acceptNext = true;
 		if (debug) log({ type: "compact-done", reason: event?.reason, tokensBefore: event?.compactionEntry?.tokensBefore });
 		return undefined;
 	});
 	pi.on("session_compact_failed", async (event: any) => {
+		compacting = false;
 		if (debug) log({ type: "compact-failed", reason: event?.reason, aborted: event?.aborted, error: event?.errorMessage });
 		return undefined;
 	});
@@ -380,6 +429,17 @@ export default function (pi: ExtensionAPI) {
 					ref.set(r.text);
 					tailRestored = true;
 					if (debug) log({ type: "system-prompt-reused", seq: seq + 1, sentChars: cur.length, reusedChars: r.text.length });
+				}
+				if (memoryHold && isSeat()) {
+					const sent = ref.get();
+					const h = chooseMemoryHold(sent, heldSystem, { acceptAll: acceptNext, compacting });
+					acceptNext = false;
+					heldSystem = h.held;
+					if (h.text !== sent) {
+						ref.set(h.text);
+						tailRestored = true;
+					}
+					if (debug && h.action) log({ type: `memory-block-${h.action}`, seq: seq + 1, reason: h.reason, sentChars: sent.length, heldChars: h.text.length });
 				}
 			}
 		}
