@@ -32,7 +32,7 @@ reloading their parent session.
 | `bang-notify.ts` | Wake Pi when a contextual `!` command finishes; learn command completions | `~/.pi/agent/bang-notify.json`; history in `bang-history.json` |
 | `settle-bell.ts` | Ring BEL on `agent_settled` | Configure the terminal's bell/attention behavior |
 | `refusal-fallback.ts` | Retry an approved false-positive provider refusal on another model | Edit constants in the source |
-| `cache-tuning.ts` | Prompt-cache fixes for long-lived sessions on Anthropic models: 1-hour cache for the main session, two workarounds (needed before pi 1.2.0) for a pi bug that changes the system prompt, a keep-warm for idle sessions, and a per-request debug log | `PI_CACHE_KEEPWARM=0`, `PI_CACHE_KEEPWARM_HOURS`, `PI_CACHE_DEBUG=0`. Log in `~/.pi/agent/cache-debug/`. Report: `recipes/scripts/cache-debug-report.py` |
+| `cache-tuning.ts` | Prompt-cache fixes for long-lived sessions on Anthropic models: 1-hour cache for the main session, two workarounds (needed before pi 1.2.0) for a pi bug that changes the system prompt, a keep-warm for idle sessions, a hold on pi-memory's prompt block, and a per-request debug log | `PI_CACHE_KEEPWARM=0`, `PI_CACHE_KEEPWARM_HOURS`, `PI_CACHE_MEMORY_HOLD=0`, `PI_CACHE_DEBUG=0`. Log in `~/.pi/agent/cache-debug/`. Report: `recipes/scripts/cache-debug-report.py` |
 | `subagent-cost.ts` | Session and subagent spend: footer chip by agent type and thinking level, machine-wide ledger, `/subagent-cost` reports | `/subagent-cost [types\|agents\|sessions\|issues\|daily] [session\|today\|week\|<N>d\|<N>h] [session:<name\|id\|this\|all>]`; ledger in `~/.pi/agent/subagent-ledger/` |
 
 ## subagent-cost.ts
@@ -177,6 +177,14 @@ header. All of it changes the provider request only, never the transcript.
    [hours] [--all]` lists every full rewrite with its cause: "prefix
    unchanged" (the provider dropped the cache), the block that changed, or a
    reload.
+6. **Hold the pi-memory block.** pi-memory rebuilds its `## Memory` block in
+   the system prompt after a long-term memory write and at the start of a
+   compaction. Each rebuild rewrites the whole conversation in the cache. The
+   session already has the entry it wrote in its conversation. So when the
+   only change is inside that block and the reason is a long-term write or a
+   running compaction, the extension sends the previous system text. It takes
+   the new block on the first request after a load or a compaction, and at the
+   day change, so the dates stay right. Main session only.
 
 Three related settings that are not in the extension:
 
