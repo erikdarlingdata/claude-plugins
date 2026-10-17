@@ -75,10 +75,6 @@ Name models by tier and moving alias, never by an explicit version. A pinned ver
 - **Cross-session messages cost the same.** Send a large-context seat a non-urgent fact as a handoff/bus file it reads
   at its next boundary, not as a message. Batch whatever must be sent into one message.
 - **Every dispatch prompt includes these lines verbatim:**
-  - "Time matters here: do not spend time that can be avoided, and the earlier a correct result is obtained, the
-    better." (Anthropic's suggested line: subagents otherwise optimize for being thorough, not fast, and of the
-    phrasings Anthropic tried, this one gave a reasonable balance between speed and quality. It pulls against
-    "finish the work", so watch for small fixes deferred to save time.)
   - "Never paste full test output. Grep for `[FAIL]|Total:`."
   - "Read files by offset/limit. Never read a whole large file."
   - "Run targeted test classes while iterating. Run the FULL suite ONCE, at the end."
@@ -92,6 +88,15 @@ Name models by tier and moving alias, never by an explicit version. A pinned ver
     Report FILES are unreliable: on 2026-09-23 the harness blocked all three lanes' report writes. A PR body is
     durable, and the coordinator reads it anyway. With no PR and no issue, the final message is the report, still
     400 words or fewer.)
+- **Lane and worker dispatches also include these two lines verbatim; reviewer and scout dispatches do not, because
+  their job is to be thorough:**
+  - "Time matters here: do not spend time that can be avoided, and the earlier a correct result is obtained, the
+    better."
+  - "Small in-lane fixes are part of a correct result."
+
+  (Source: Anthropic. Subagents tend to be thorough, not fast. Of the phrasings Anthropic tried, the first line gave
+  a reasonable balance of speed and quality. It pulls against the lane's "Scope: finish what you touch", which is
+  what the second line is for. To check it, count each PR's follow-up issues and "out of scope" items.)
 - **Standing prompts are context too.** Loop charters, tick prompts, CLAUDE.md/AGENTS.md files and memory indexes are
   loaded on every run. Keep each under ~8k tokens (~30 KB). At every wave boundary, prune what is resolved instead of
   appending forever.
