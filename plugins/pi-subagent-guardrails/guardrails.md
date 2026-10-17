@@ -75,6 +75,10 @@ Name models by tier and moving alias, never by an explicit version. A pinned ver
 - **Cross-session messages cost the same.** Send a large-context seat a non-urgent fact as a handoff/bus file it reads
   at its next boundary, not as a message. Batch whatever must be sent into one message.
 - **Every dispatch prompt includes these lines verbatim:**
+  - "Time matters here: do not spend time that can be avoided, and the earlier a correct result is obtained, the
+    better." (Anthropic's suggested line: subagents otherwise optimize for being thorough, not fast, and of the
+    phrasings Anthropic tried, this one gave a reasonable balance between speed and quality. It pulls against
+    "finish the work", so watch for small fixes deferred to save time.)
   - "Never paste full test output. Grep for `[FAIL]|Total:`."
   - "Read files by offset/limit. Never read a whole large file."
   - "Run targeted test classes while iterating. Run the FULL suite ONCE, at the end."
