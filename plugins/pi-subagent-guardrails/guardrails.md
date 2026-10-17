@@ -88,7 +88,7 @@ Name models by tier and moving alias, never by an explicit version. A pinned ver
     Report FILES are unreliable: on 2026-09-23 the harness blocked all three lanes' report writes. A PR body is
     durable, and the coordinator reads it anyway. With no PR and no issue, the final message is the report, still
     400 words or fewer.)
-- **Lane and worker dispatches also include these two lines verbatim; reviewer and scout dispatches do not, because
+- **Lane and worker dispatches also include these two lines verbatim. Reviewer and scout dispatches do not, because
   their job is to be thorough:**
   - "Time matters here: do not spend time that can be avoided, and the earlier a correct result is obtained, the
     better."
