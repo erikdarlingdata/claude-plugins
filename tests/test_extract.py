@@ -126,6 +126,80 @@ class Timing(unittest.TestCase):
         self.assertIn("per invocation", out)
 
 
+def _counters(*threads, mode="Row"):
+    """RunTimeInformation for (thread, rows, elapsed_ms, cpu_ms) tuples."""
+    rows = "".join(
+        f'<RunTimeCountersPerThread Thread="{t}" ActualRows="{r}" ActualExecutions="1" '
+        f'ActualEndOfScans="1" ActualExecutionMode="{mode}" ActualElapsedms="{e}" ActualCPUms="{c}"/>'
+        for t, r, e, c in threads
+    )
+    return f"<RunTimeInformation>{rows}</RunTimeInformation>"
+
+
+def _relop(node_id, physical, logical, counters, inner="", mode="Row", parallel=False):
+    return (
+        f'<RelOp NodeId="{node_id}" PhysicalOp="{physical}" LogicalOp="{logical}" '
+        f'EstimateRows="1" EstimatedTotalSubtreeCost="1" EstimatedExecutionMode="{mode}" '
+        f'Parallel="{"1" if parallel else "0"}">{counters}{inner}</RelOp>'
+    )
+
+
+def _plan(cpu_ms, elapsed_ms, root):
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan">'
+        "<BatchSequence><Batch><Statements>"
+        '<StmtSimple StatementId="1" StatementType="SELECT" StatementText="x"><QueryPlan>'
+        f'<QueryTimeStats CpuTime="{cpu_ms}" ElapsedTime="{elapsed_ms}"/>{root}'
+        "</QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>"
+    )
+
+
+def _node_self_cpu(body, node_id):
+    import tempfile
+    p = pathlib.Path(tempfile.mkdtemp()) / "self-cpu.sqlplan"
+    p.write_text(body, encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, str(EXTRACT), str(p), "--node", str(node_id)], capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        raise AssertionError(f"extract.py failed:\n{r.stderr}")
+    line = next(l for l in r.stdout.splitlines() if "self CPU" in l)
+    return float(line.split(":")[1].strip().split()[0].replace(",", ""))
+
+
+class SelfCpu(unittest.TestCase):
+    """Self CPU. Built in memory, so these run without the fixture directory."""
+
+    def test_parallel_self_cpu_sums_threads(self):
+        # CPU sums across threads; elapsed takes the slowest one. own_cpu_ms took
+        # the max, so a scan whose four workers burned 100 ms each reported 100 ms
+        # of a 400 ms query, and "CPU above elapsed means parallelism" could never
+        # show on a row-mode parallel operator. On a real DOP 8 scan: 79 of 624 ms.
+        scan = _relop(1, "Clustered Index Scan", "Clustered Index Scan",
+                      _counters((0, 0, 0, 0), (1, 10, 110, 100), (2, 10, 110, 100),
+                                (3, 10, 110, 100), (4, 10, 110, 100)), parallel=True)
+        gather = _relop(0, "Parallelism", "Gather Streams", _counters((0, 40, 115, 0)),
+                        f"<Parallelism>{scan}</Parallelism>", parallel=True)
+        self.assertEqual(_node_self_cpu(_plan(400, 120, gather), 1), 400)
+
+    def test_row_mode_parent_over_batch_zone_does_not_absorb_its_cpu(self):
+        # effective_child_cpu took a batch child's own CPU and stopped, though
+        # batch CPU is standalone exactly like batch elapsed. The row-mode parent
+        # kept the CPU of everything below the batch Sort. In a real plan a
+        # serial Stream Aggregate showed 14,771 ms of self CPU next to 3,059 ms
+        # of self elapsed. The zone sum gives 3,112.
+        seek = _relop(3, "Index Seek", "Index Seek", _counters((0, 50, 100, 100)))
+        loops = _relop(2, "Nested Loops", "Inner Join", _counters((0, 50, 300, 300)),
+                       f"<NestedLoops>{seek}</NestedLoops>")
+        sort = _relop(1, "Sort", "Sort", _counters((0, 50, 600, 600), mode="Batch"),
+                      f"<Sort>{loops}</Sort>", mode="Batch")
+        agg = _relop(0, "Stream Aggregate", "Aggregate", _counters((0, 1, 1000, 1000)),
+                     f"<StreamAggregate>{sort}</StreamAggregate>")
+        # 1000 cumulative - (600 batch Sort + 300 row-mode Nested Loops below it) = 100
+        self.assertEqual(_node_self_cpu(_plan(1000, 1000, agg), 0), 100)
+
+
 class Cardinality(unittest.TestCase):
     def test_estimates_are_normalized_per_execution(self):
         # ActualRows is a total; EstimateRows is per execution. Comparing them

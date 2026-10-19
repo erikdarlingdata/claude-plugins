@@ -320,16 +320,18 @@ def fmt_duration(ms):
 # ---------------------------------------------------------------------------
 
 
-def sum_batch_subtree(node):
-    """Batch operators pipeline, so their elapsed times add rather than nest."""
-    total = node.elapsed_ms
+def sum_batch_subtree(node, key="elapsed"):
+    """Batch operators pipeline, so their times add rather than nest. CPU too."""
+    total = node.elapsed_ms if key == "elapsed" else node.cpu_ms
     for c in node.children:
         if c.physical == "Parallelism":
             continue  # zone boundary
         if c.mode == "Batch" and c.has_actual:
-            total += sum_batch_subtree(c)
-        else:
+            total += sum_batch_subtree(c, key)
+        elif key == "elapsed":
             total += effective_child_elapsed(c)
+        else:
+            total += effective_child_cpu(c)
     return total
 
 
@@ -401,8 +403,8 @@ def _child_by_thread(child, key):
 
 def per_thread_self(node, key):
     """
-    Parallel: subtract within a thread, never across threads, then take the
-    slowest thread. Cross-thread subtraction produces nonsense.
+    Parallel: subtract within a thread, never across threads. Cross-thread
+    subtraction produces nonsense. Returns {thread: self time}.
 
     The coordinator (thread 0) is excluded: it does no row work, and its elapsed
     is the parallel branch's wall clock, so including it hands every operator in
@@ -412,14 +414,12 @@ def per_thread_self(node, key):
     child_by_thread = {}
     for child in node.children:
         _merge(child_by_thread, _child_by_thread(child, key))
-    return max(
-        (max(0.0, p - child_by_thread.get(t, 0.0)) for t, p in parent_by_thread.items()),
-        default=0.0,
-    )
+    return {t: max(0.0, p - child_by_thread.get(t, 0.0)) for t, p in parent_by_thread.items()}
 
 
 def per_thread_self_elapsed(node):
-    return per_thread_self(node, "elapsed")
+    # Elapsed is wall clock: the operator finished when its slowest thread did.
+    return max(per_thread_self(node, "elapsed").values(), default=0.0)
 
 
 def own_elapsed_ms(node):
@@ -442,6 +442,12 @@ def own_elapsed_ms(node):
 def effective_child_cpu(child):
     if child.physical == "Parallelism" and child.children:
         return max(effective_child_cpu(gc) for gc in child.children)
+    # A batch child's CPU is standalone, exactly like its elapsed. Taking only
+    # its own value leaves the rest of the zone's CPU in the row-mode parent: a
+    # serial Stream Aggregate over a batch Sort reported 14,771 ms of self CPU
+    # against 3,059 ms of self elapsed. The zone sum gives 3,112.
+    if child.mode == "Batch" and child.has_actual:
+        return sum_batch_subtree(child, "cpu")
     if child.cpu_ms > 0:
         return child.cpu_ms
     if not child.children:
@@ -460,9 +466,12 @@ def own_cpu_ms(node):
     if node.mode == "Batch":
         return node.cpu_ms  # standalone, exactly like batch-mode elapsed
     if len(node.threads) > 1:
-        # Coordinator excluded, same as elapsed: it burns no CPU, so leaving it in
-        # only contributes a zero to the max and hides the workers' real self CPU.
-        return per_thread_self(node, "cpu")
+        # CPU SUMS across threads; it does not take the slowest one. Every thread
+        # burned its own, which is why CPU above elapsed means parallelism. Taking
+        # the max reported one thread's share: a DOP 8 scan that burned 624 ms
+        # showed 79. Coordinator excluded, same as elapsed: it burns no CPU, so
+        # leaving it in only contributes a zero.
+        return sum(per_thread_self(node, "cpu").values())
     return max(0.0, node.cpu_ms - sum(effective_child_cpu(c) for c in node.children))
 
 

@@ -88,6 +88,13 @@ self[t] = parent_elapsed[t] - sum(child_elapsed[t])
 self    = max over t of self[t]
 ```
 
+CPU uses the same per-thread subtraction, then **adds** the threads instead of
+taking the slowest one, because every thread burned its own:
+
+```
+self_cpu = sum over t of (parent_cpu[t] - sum(child_cpu[t]))
+```
+
 Subtracting an aggregate child total from an aggregate parent total mixes threads
 that never ran together and produces garbage, frequently negative, which then
 clamps to zero and hides the real hotspot.
@@ -100,8 +107,9 @@ by hand.
 If a row-mode operator sits above a contiguous batch-mode region, that region's
 operators each reported standalone times. To subtract the region's contribution
 from the row-mode parent, **sum** the batch operators' elapsed times across the
-region, stopping at any `Parallelism` boundary. Taking just the topmost batch
-operator's time undercounts and inflates the parent's apparent self time.
+region, stopping at any `Parallelism` boundary. Do the same for CPU. Taking just
+the topmost batch operator's time undercounts and inflates the parent's apparent
+self time.
 
 ## Statement-level totals
 
