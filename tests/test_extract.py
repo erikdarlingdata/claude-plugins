@@ -201,6 +201,34 @@ class Rewrites(unittest.TestCase):
         self.assertIn("(serial)", out)  # DOP 0 and DOP 1 both mean one thread
 
 
+class RowGoals(unittest.TestCase):
+    """
+    EstimateRowsWithoutRowGoal says the optimizer planned to stop early. It says
+    nothing about what happened. ActualEndOfScans does.
+    """
+
+    def _read_line(self, out, emitted):
+        return next(l for l in out.splitlines() if f"rows to emit {emitted} " in l)
+
+    def test_row_goal_does_not_hide_a_seek_that_read_billions(self):
+        # The Posts seek stopped early on 5,718 of 5,829 executions, and read
+        # 1.37 billion rows doing it. A row goal note used to replace the flag.
+        out = digest("chatgpt-rewrite-slow.sqlplan")
+        line = self._read_line(out, "5,718")
+        self.assertIn("reads far more than it returns", line)
+        self.assertIn("5,718 of 5,829 executions stopped early", line)
+        self.assertNotIn("did not read the table", out)
+
+    def test_row_goal_that_read_to_the_end_says_so(self):
+        # TOP (1000) over a scan in LastAccessDate order, with a residual filter
+        # only 613 rows pass. It never found 1000, so it read all 2,465,713.
+        out = digest(str(REPO / "tests/plans/row-goal-read-to-end.sqlplan"))
+        line = self._read_line(out, "613")
+        self.assertIn("reads far more than it returns", line)
+        self.assertIn("every execution read to the end", line)
+        self.assertNotIn("stopped early", line)
+
+
 class Hostile(unittest.TestCase):
     """A .sqlplan is handed to you by someone else. Treat it as untrusted input."""
 

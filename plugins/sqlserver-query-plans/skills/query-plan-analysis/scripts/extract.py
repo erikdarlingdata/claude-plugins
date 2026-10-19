@@ -98,6 +98,9 @@ class Node:
         self.actual_rows = 0.0
         self.actual_rows_read = 0.0
         self.actual_executions = 0.0
+        # Executions that read to the end of their input. Under a row goal, the
+        # rest were stopped early by the operator above. None if not recorded.
+        self.end_of_scans = None
         self.elapsed_ms = 0.0
         self.cpu_ms = 0.0
         self.logical_reads = 0.0
@@ -111,6 +114,7 @@ class Node:
                         "rows": num(t, "ActualRows"),
                         "rows_read": num(t, "ActualRowsRead"),
                         "executions": num(t, "ActualExecutions"),
+                        "end_of_scans": num(t, "ActualEndOfScans", None),
                         "elapsed": num(t, "ActualElapsedms"),
                         "cpu": num(t, "ActualCPUms"),
                         "reads": num(t, "ActualLogicalReads"),
@@ -129,6 +133,9 @@ class Node:
                 self.actual_rows = sum(t["rows"] for t in self.threads)
                 self.actual_rows_read = sum(t["rows_read"] for t in self.threads)
                 self.actual_executions = sum(t["executions"] for t in self.threads)
+                eos = [t["end_of_scans"] for t in self.threads if t["end_of_scans"] is not None]
+                if eos:
+                    self.end_of_scans = sum(eos)
                 self.cpu_ms = sum(t["cpu"] for t in self.threads)
                 self.logical_reads = sum(t["reads"] for t in self.threads)
                 self.elapsed_ms = max(t["elapsed"] for t in self.work_threads)
@@ -584,6 +591,25 @@ def fmt_rows(n):
     return f"{n:,.0f}" if n >= 1 else f"{n:.4g}"
 
 
+def row_goal_runtime(n):
+    """
+    What a row goal did at runtime. EstimateRowsWithoutRowGoal only says the
+    optimizer PLANNED to stop early. ActualEndOfScans counts the executions that
+    read to the end of their input anyway, so the rest are the ones that stopped.
+    """
+    if n.end_of_scans is None or n.actual_executions <= 0:
+        return "may have stopped early"
+    if n.end_of_scans >= n.actual_executions:
+        return "did not stop it, every execution read to the end"
+    stopped = n.actual_executions - n.end_of_scans
+    if n.actual_executions == 1:
+        return "stopped early"
+    return (
+        f"{fmt_rows(stopped)} of {fmt_rows(n.actual_executions)} "
+        f"executions stopped early"
+    )
+
+
 def render_tree(node, out, has_actual, depth=0, budget=None):
     """
     Indented operator tree. This is the only view of plan SHAPE, and on an
@@ -791,12 +817,14 @@ def describe_statement(stmt_el, out, top_n, full_sql=False):
             if n.actual_rows_read > 0:
                 ratio = n.actual_rows_read / max(n.actual_rows, 1)
                 if ratio >= 2:
+                    # A row goal does not excuse the reads: an execution can stop
+                    # early and still read millions of rows first, or never stop.
+                    notes = []
+                    if ratio >= 100:
+                        notes.append("<-- reads far more than it returns")
                     if n.row_goal:
-                        flag = "   [row goal: stopped early, did not read the table]"
-                    elif ratio >= 100:
-                        flag = "   <-- reads far more than it returns"
-                    else:
-                        flag = ""
+                        notes.append(f"[row goal: {row_goal_runtime(n)}]")
+                    flag = "   " + "  ".join(notes) if notes else ""
                     out.append(
                         f"  {'':>14}  {'':>12}  read {fmt_rows(n.actual_rows_read)} rows "
                         f"to emit {fmt_rows(n.actual_rows)} ({ratio:,.0f}x){flag}"
@@ -984,10 +1012,15 @@ def describe_statement(stmt_el, out, top_n, full_sql=False):
                 f"(correlated - a join here needs no predicate)"
             )
         if n.row_goal:
-            bits.append(
-                "    row goal  : active (TOP/FAST/EXISTS) - a scan may stop early, so a "
-                "large rows-read count does not mean it read the whole table"
-            )
+            if n.has_actual and n.end_of_scans is not None:
+                bits.append(
+                    f"    row goal  : active (TOP/FAST/EXISTS) - {row_goal_runtime(n)}"
+                )
+            else:
+                bits.append(
+                    "    row goal  : active (TOP/FAST/EXISTS) - a scan may stop early, so a "
+                    "large rows-read count does not mean it read the whole table"
+                )
         # For a no-join-predicate warning: did the output actually multiply?
         if any("No join predicate" in w for w in n.warnings) and n.has_actual:
             inputs = [c.actual_rows for c in n.children if c.has_actual]
