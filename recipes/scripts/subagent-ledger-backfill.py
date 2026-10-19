@@ -76,7 +76,8 @@ for f in sorted(glob.glob(os.path.join(LEDGER, "*.jsonl"))):
         if l.get("source") == "backfill":
             continue
         existing[day].append(raw if raw.endswith("\n") else raw + "\n")
-        if l.get("id") and l.get("ts"):
+        # toolwarm ping lines (cache-tuning.ts) are not messages; they must not mark an agent as live
+        if l.get("id") and l.get("ts") and l.get("source") != "toolwarm":
             k = live_key(l)
             if k not in live_first or l["ts"] < live_first[k]:
                 live_first[k], live_id[k] = l["ts"], l["id"]

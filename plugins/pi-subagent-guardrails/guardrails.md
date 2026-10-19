@@ -80,7 +80,8 @@ Name models by tier and moving alias, never by an explicit version. A pinned ver
   - "Run targeted test classes while iterating. Run the FULL suite ONCE, at the end."
   - "Cap command output: pipe through `head`, `tail -n` or `grep`. Never dump full CI logs, full JSON, or whole
     issue/PR bodies."
-  - "Stop and write a handoff note when your context passes about 150k."
+  - "If the context wall warns you, stop and write a handoff note." (The context wall measures the lane's real
+    context. Of 34 lanes in one week, 11 passed 150k and none reached 300k.)
   - "Never end your turn to wait for a background notification. Run long commands in the foreground, or poll your
     own output file." (A lost notification stranded a lane idle for 1.5 hours.)
   - "Put your full report in the PR body (an issue comment if there is no PR). Your final message is 400 words or
