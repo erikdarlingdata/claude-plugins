@@ -1,6 +1,6 @@
 /**
- * Prompt-cache tuning. Two fixes, both measured on a week of session files
- * (2026-09-30 to 2026-10-07):
+ * Prompt-cache tuning. Fixes 1 and 2 were measured on a week of session files
+ * (2026-09-30 to 2026-10-07); each later fix gives its own numbers:
  *
  * 1. Long cache retention by default. pi reads PI_CACHE_RETENTION from
  *    process.env on every request; "long" makes OpenRouter anthropic/* and
@@ -77,15 +77,38 @@
  *    block and its reason is long_term_write, or a compaction is running, this
  *    sends the previous system text (request only; logged as
  *    "memory-block-held"). It accepts the new block on the first request after
- *    a load or a compaction, and on day_rollover so the dates stay right.
+ *    a load or a compaction.
+ *    Day rollover (added 2026-10-17): pi-memory also rebuilds the block at
+ *    local midnight, which still rewrote every seat once a day (0.66M-1.15M
+ *    tokens a day, about $5-9, Oct 16-17). Now that refresh is held too, and
+ *    the first run of the new day gets a short message appended after the
+ *    history that gives the new date and says the memory block is from the
+ *    day before. An append keeps the cached prefix. The block itself refreshes
+ *    at the next compaction. PI_CACHE_HOLD_ROLLOVER=0 accepts the new block
+ *    instead (the old behavior).
  *    Seats only. PI_CACHE_MEMORY_HOLD=0 turns it off. Test (pi -ne, test memory
  *    dir): with the hold, the prompt after a write wrote 13 tokens; without it,
- *    20,929.
+ *    20,929. Rollover test (clock moved to 00:01): with the hold, 139 tokens;
+ *    without it, 13,105.
+ *
+ * 7. Keep-warm during long tool calls (added 2026-10-17). Subagents use the
+ *    5-minute cache, and a lane that waits on a long build or test run lost it:
+ *    50 waits over 5 minutes in one day rewrote 5.64M tokens (~$14). While a
+ *    tool call runs, the subagent re-sends its last request with a one-token
+ *    cap every 4.5 minutes, for up to 60 minutes. A longer wait costs more in
+ *    pings than one rewrite. The ping swaps max_completion_tokens for
+ *    max_tokens: 1 (see capOutput). Each ping's cost goes into the subagent
+ *    ledger under the lane's agent id (source "toolwarm"). Test (sleep 300):
+ *    with the pings, the next request wrote 89 tokens; without, 12,844.
+ *    PI_CACHE_TOOLWARM=0 turns it off.
+ *
+ * The seat's last real request is also published at
+ * globalThis[Symbol.for("cache-tuning:last-seat-request")] for self-compact.ts.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -94,10 +117,23 @@ const KEEPWARM_INTERVAL_MS = Number(process.env.PI_CACHE_KEEPWARM_INTERVAL_MS) |
 /** A ping later than this after the last cache use is likely a full rewrite, so it is skipped. */
 const KEEPWARM_LATE_MS = 58 * 60_000;
 const KEEPWARM_MAX_MS = (Number(process.env.PI_CACHE_KEEPWARM_HOURS) || 24) * 3_600_000;
+const TOOLWARM_INTERVAL_MS = Number(process.env.PI_CACHE_TOOLWARM_INTERVAL_MS) || 270_000; // 4.5 min, inside the 5-minute cache
+const TOOLWARM_MAX_MS = 60 * 60_000; // past an hour of tool time, let it go
 const DEBUG_DIR = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "cache-debug");
 const SNIPPET = 240;
 
 type Block = { path: string; hash: string; chars: number; snippet: string; json?: string };
+
+// A ping needs one output token. Subagent payloads carry max_completion_tokens, and
+// OpenRouter ignores a cap of 1 in that field (tested 2026-10-17: 79 to 794 output
+// tokens). It honors max_tokens: 1, so swap the field. Thinking and tool_choice stay
+// as sent, so the cached prefix still matches.
+function capOutput(p: any): any {
+	const q = structuredClone(p);
+	delete q.max_completion_tokens;
+	q.max_tokens = 1;
+	return q;
+}
 
 function withoutCacheControl(v: unknown): unknown {
 	if (Array.isArray(v)) return v.map(withoutCacheControl);
@@ -215,14 +251,17 @@ const MEMORY_HEADER = "\n\n## Memory\n";
  *   "## Memory" header identical); otherwise it is a real change: send cur.
  * - During a compaction (pi-memory refreshes at its start), or when the new
  *   snapshot reason is long_term_write: send the held text.
- * - Any other reason (day_rollover keeps the dates right): send cur.
+ * - day_rollover: send the held text too, unless opts.holdRollover is false.
+ *   The caller appends a date note so the seat knows the block is a day old.
+ * - Any other reason: send cur.
  */
-export function chooseMemoryHold(cur: string, held: string | undefined, opts: { acceptAll: boolean; compacting: boolean }): { text: string; held: string; action?: string; reason?: string } {
+export function chooseMemoryHold(cur: string, held: string | undefined, opts: { acceptAll: boolean; compacting: boolean; holdRollover?: boolean }): { text: string; held: string; action?: string; reason?: string } {
 	if (opts.acceptAll || held === undefined || held === cur) return { text: cur, held: cur };
 	const hdr = cur.indexOf(MEMORY_HEADER);
 	if (hdr < 0 || held.indexOf(MEMORY_HEADER) !== hdr || held.slice(0, hdr) !== cur.slice(0, hdr)) return { text: cur, held: cur, action: "accepted", reason: "change outside memory" };
 	const reason = /\(Snapshot (\w+) at /.exec(cur.slice(hdr, hdr + 200))?.[1] ?? "unknown";
-	if (opts.compacting || reason === "long_term_write") return { text: held, held, action: "held", reason };
+	if (opts.compacting || reason === "long_term_write" || reason === "session_before_compact") return { text: held, held, action: "held", reason };
+	if (reason === "day_rollover" && opts.holdRollover !== false) return { text: held, held, action: "held", reason };
 	return { text: cur, held: cur, action: "accepted", reason };
 }
 
@@ -326,7 +365,7 @@ export default function (pi: ExtensionAPI) {
 		if (now - lastUseAt > KEEPWARM_LATE_MS) return stopWarm(`timer late by ${Math.round((now - lastUseAt) / 60_000)} min (sleep?); cache likely expired`);
 		pinging = true;
 		try {
-			const payload = { ...structuredClone(w.payload), max_tokens: 1 };
+			const payload = capOutput(w.payload);
 			const msg: any = await w.registry
 				.streamSimple(w.model, { messages: [] }, { maxTokens: 1, maxRetries: 0, onPayload: () => payload })
 				.result();
@@ -381,6 +420,15 @@ export default function (pi: ExtensionAPI) {
 	// fix 6 state: the system text last sent (seat only)
 	const memoryHold = process.env.PI_CACHE_MEMORY_HOLD !== "0";
 	let heldSystem: string | undefined;
+	let lastHoldLogged: string | undefined;
+	const holdRollover = process.env.PI_CACHE_HOLD_ROLLOVER !== "0";
+	const localDay = () => {
+		const d = new Date();
+		return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+	};
+	let heldDay: string | undefined; // local day of the memory block the seat is being sent
+	let notedDay: string | undefined; // local day the date note was last appended for
+	const toolWarm = process.env.PI_CACHE_TOOLWARM !== "0";
 	let compacting = false;
 	let acceptNext = true;
 	pi.on("session_start", async () => {
@@ -411,6 +459,23 @@ export default function (pi: ExtensionAPI) {
 	let typedRun = false;
 	pi.on("before_agent_start", async () => {
 		typedRun = true;
+		// Day rollover: the held memory block is from an earlier day. Say so at the end
+		// of the history (an append keeps the cache) instead of rebuilding the prompt.
+		const today = localDay();
+		if (memoryHold && holdRollover && isSeat() && heldSystem && heldDay && heldDay !== today && notedDay !== today) {
+			notedDay = today;
+			if (debug) log({ type: "date-note", day: today, heldDay });
+			return {
+				message: {
+					customType: "cache-tuning-date",
+					content:
+						`[date] The local date is now ${today}. The memory block in your system prompt is a snapshot from ${heldDay}, ` +
+						`kept unchanged to save the prompt cache, so the daily log it calls "today" is ${heldDay}'s. ` +
+						`Use memory_read (target "daily") for today's log. The block refreshes at the next compaction.`,
+					display: false,
+				},
+			};
+		}
 		return undefined;
 	});
 	pi.on("agent_end", async () => {
@@ -432,14 +497,19 @@ export default function (pi: ExtensionAPI) {
 				}
 				if (memoryHold && isSeat()) {
 					const sent = ref.get();
-					const h = chooseMemoryHold(sent, heldSystem, { acceptAll: acceptNext, compacting });
+					const h = chooseMemoryHold(sent, heldSystem, { acceptAll: acceptNext, compacting, holdRollover });
 					acceptNext = false;
+					if (h.held !== heldSystem || heldDay === undefined) {
+						if (h.text === sent) heldDay = localDay(); // a fresh block was accepted
+					}
 					heldSystem = h.held;
 					if (h.text !== sent) {
 						ref.set(h.text);
 						tailRestored = true;
 					}
-					if (debug && h.action) log({ type: `memory-block-${h.action}`, seq: seq + 1, reason: h.reason, sentChars: sent.length, heldChars: h.text.length });
+					// log once per new block, not on every request that keeps holding it
+					if (debug && h.action && sent !== lastHoldLogged) log({ type: `memory-block-${h.action}`, seq: seq + 1, reason: h.reason, sentChars: sent.length, heldChars: h.text.length });
+					lastHoldLogged = sent;
 				}
 			}
 		}
@@ -453,9 +523,124 @@ export default function (pi: ExtensionAPI) {
 		}
 		let changed = false;
 		if (g[SEAT_OWNER_KEY] !== instanceId) changed = stripLongTtl(event.payload) > 0;
+		if (toolWarm) {
+			stopToolWarm();
+			const p: any = event.payload;
+			const short = !JSON.stringify(p).includes('"ttl":"1h"') && JSON.stringify(p).includes('"cache_control"');
+			tw = short && ctx?.model ? { payload: structuredClone(p), model: ctx.model, registry: ctx.modelRegistry, cached: 0, since: Date.now() } : undefined;
+			twLastUse = Date.now();
+			if (tw && toolsRunning > 0) scheduleToolWarm();
+		}
+		// Publish the seat's last real request for self-compact's cached summary (fix 8 there).
+		if (isSeat() && !pinging && ctx?.model) (globalThis as any)[Symbol.for("cache-tuning:last-seat-request")] = { payload: event.payload, model: ctx.model, registry: ctx.modelRegistry, at: Date.now() };
 		if (debug) debugRequest(event.payload, ctx);
 		return changed || tailRestored ? event.payload : undefined;
 	});
+
+	// ---- fix 7: keep a 5-minute cache warm while a long tool call runs ----
+	let tw: { payload: any; model: any; registry: any; cached: number; since: number } | undefined;
+	let twLastUse = 0;
+	let twTimer: ReturnType<typeof setTimeout> | undefined;
+	let toolsRunning = 0;
+	function stopToolWarm(reason?: string) {
+		if (twTimer) clearTimeout(twTimer);
+		twTimer = undefined;
+		if (reason && tw && debug) log({ type: "toolwarm-stop", reason });
+	}
+	function scheduleToolWarm() {
+		if (!tw || twTimer) return;
+		twTimer = setTimeout(() => void toolPing(), Math.max(1000, twLastUse + TOOLWARM_INTERVAL_MS - Date.now()));
+		twTimer.unref?.();
+	}
+	// Ping spend goes into the subagent ledger under the lane's own agent id, so
+	// per-lane and per-seat costs include it (added 2026-10-19). The lane's cwd is
+	// pi-subagents' temp dir "pi-agent-<agent id>-<random>"; the other fields are
+	// copied from the lane's first ledger line, which its parent wrote live.
+	let pingMeta: Record<string, unknown> | null | undefined;
+	function ledgerPing(u: any, model: any) {
+		try {
+			if (!(u?.cost?.total > 0)) return;
+			const id = /pi-agent-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{3})/.exec(process.cwd())?.[1];
+			if (!id) return; // not a pi-subagents agent
+			const dir = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "subagent-ledger");
+			const now = new Date();
+			if (pingMeta === undefined || pingMeta === null) {
+				pingMeta = null;
+				for (const d of [now, new Date(now.getTime() - 86_400_000)]) {
+					let text = "";
+					try { text = readFileSync(join(dir, `${d.toISOString().slice(0, 10)}.jsonl`), "utf8"); } catch { continue; }
+					const at = text.indexOf(`"id":"${id}`);
+					if (at < 0) continue;
+					const line = JSON.parse(text.slice(text.lastIndexOf("\n", at) + 1, text.indexOf("\n", at)));
+					const { sessionId, sessionName, cwd, type, description, model: m, thinking, depth, parentAgentId, workflowId } = line;
+					pingMeta = { sessionId, sessionName, cwd, id: line.id, type, description, model: m, thinking, depth, parentAgentId, workflowId };
+					break;
+				}
+			}
+			const line = {
+				ts: now.toISOString(),
+				...(pingMeta ?? { id, type: "unknown", description: "(toolwarm ping, lane not in ledger)", model: `${model?.provider}/${model?.id}`, thinking: "default", depth: 1 }),
+				cost: u.cost.total, input: u.input ?? 0, output: u.output ?? 0, cacheRead: u.cacheRead ?? 0, cacheWrite: u.cacheWrite ?? 0,
+				source: "toolwarm",
+			};
+			mkdirSync(dir, { recursive: true });
+			appendFileSync(join(dir, `${line.ts.slice(0, 10)}.jsonl`), `${JSON.stringify(line)}\n`);
+		} catch {
+			// the ledger is best effort; never break a ping over it
+		}
+	}
+	async function toolPing() {
+		twTimer = undefined;
+		const w = tw;
+		if (!w || toolsRunning === 0) return;
+		const now = Date.now();
+		if (now - w.since > TOOLWARM_MAX_MS) return stopToolWarm("tool wait limit");
+		if (now - twLastUse > 295_000) return stopToolWarm(`timer late by ${Math.round((now - twLastUse) / 1000)} s; cache likely expired`);
+		try {
+			const payload = capOutput(w.payload);
+			const msg: any = await w.registry.streamSimple(w.model, { messages: [] }, { maxTokens: 1, maxRetries: 0, onPayload: () => payload }).result();
+			if (tw !== w) return;
+			const u = msg?.usage ?? {};
+			ledgerPing(u, w.model);
+			if (debug) log({ type: "toolwarm", stop: msg?.stopReason, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite, input: u.input, output: u.output, cost: u.cost?.total, error: msg?.errorMessage?.slice(0, 300), waitMin: Math.round((now - w.since) / 6000) / 10, tools: toolsRunning });
+			if (msg?.stopReason === "error" || msg?.stopReason === "aborted") return stopToolWarm("ping failed");
+			if (w.cached > 0 && (u.cacheRead ?? 0) < 0.5 * w.cached) return stopToolWarm(`cache was gone (read ${u.cacheRead}, expected ~${w.cached})`);
+			w.cached = (u.cacheRead ?? 0) + (u.cacheWrite ?? 0) + (u.input ?? 0);
+			twLastUse = Date.now();
+			if (toolsRunning > 0) scheduleToolWarm();
+		} catch (err) {
+			if (tw === w) stopToolWarm(`ping threw: ${String(err).slice(0, 200)}`);
+		}
+	}
+	if (toolWarm) {
+		pi.on("tool_execution_start", async (e: any) => {
+			if (e?.parentToolCallId) return; // nested calls run inside a tool already counted
+			toolsRunning++;
+			scheduleToolWarm();
+		});
+		pi.on("tool_execution_end", async (e: any) => {
+			if (e?.parentToolCallId) return;
+			toolsRunning = Math.max(0, toolsRunning - 1);
+			if (toolsRunning === 0) stopToolWarm();
+		});
+		pi.on("message_end", async (event) => {
+			const m: any = event.message;
+			if (m?.role !== "assistant" || !m.usage || !tw) return undefined;
+			const u = m.usage;
+			tw.cached = (u.cacheRead ?? 0) + (u.cacheWrite ?? 0) + (u.input ?? 0);
+			twLastUse = Date.now();
+			return undefined;
+		});
+		pi.on("agent_end", async () => {
+			toolsRunning = 0;
+			stopToolWarm();
+			tw = undefined;
+		});
+		pi.on("session_shutdown", async () => {
+			stopToolWarm();
+			tw = undefined;
+		});
+	}
 
 	pi.on("context_with_system", async (event) => {
 		const r = dropFlappingRemovals(event.messages as any[]);

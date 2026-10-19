@@ -15,6 +15,7 @@ cp recipes/extensions/bang-notify.ts ~/.pi/agent/extensions/
 cp recipes/extensions/settle-bell.ts ~/.pi/agent/extensions/
 cp recipes/extensions/subagent-cost.ts ~/.pi/agent/extensions/
 cp recipes/extensions/cache-tuning.ts ~/.pi/agent/extensions/
+cp recipes/extensions/self-compact.ts ~/.pi/agent/extensions/
 # Advanced and policy-sensitive; read its warning first:
 cp recipes/extensions/refusal-fallback.ts ~/.pi/agent/extensions/
 ```
@@ -32,7 +33,8 @@ reloading their parent session.
 | `bang-notify.ts` | Wake Pi when a contextual `!` command finishes; learn command completions | `~/.pi/agent/bang-notify.json`; history in `bang-history.json` |
 | `settle-bell.ts` | Ring BEL on `agent_settled` | Configure the terminal's bell/attention behavior |
 | `refusal-fallback.ts` | Retry an approved false-positive provider refusal on another model | Edit constants in the source |
-| `cache-tuning.ts` | Prompt-cache fixes for long-lived sessions on Anthropic models: 1-hour cache for the main session, two workarounds (needed before pi 1.2.0) for a pi bug that changes the system prompt, a keep-warm for idle sessions, a hold on pi-memory's prompt block, and a per-request debug log | `PI_CACHE_KEEPWARM=0`, `PI_CACHE_KEEPWARM_HOURS`, `PI_CACHE_MEMORY_HOLD=0`, `PI_CACHE_DEBUG=0`. Log in `~/.pi/agent/cache-debug/`. Report: `recipes/scripts/cache-debug-report.py` |
+| `cache-tuning.ts` | Prompt-cache fixes for long-lived sessions on Anthropic models: 1-hour cache for the main session, two workarounds (needed before pi 1.2.0) for a pi bug that changes the system prompt, a keep-warm for idle sessions, a hold on pi-memory's prompt block, a keep-warm for subagents during long tool calls, and a per-request debug log | `PI_CACHE_KEEPWARM=0`, `PI_CACHE_KEEPWARM_HOURS`, `PI_CACHE_MEMORY_HOLD=0`, `PI_CACHE_HOLD_ROLLOVER=0`, `PI_CACHE_TOOLWARM=0`, `PI_CACHE_DEBUG=0`. Log in `~/.pi/agent/cache-debug/`. Reports: `recipes/scripts/cache-debug-report.py`, `recipes/scripts/rewrite-classify.py` |
+| `self-compact.ts` | Lets a long-running session compact itself at task boundaries, compacts an idle session that grew too large, keeps compaction file lists from growing, and (trial) writes the summary from the cache | `PI_SELF_COMPACT_MIN_TOKENS`, `PI_SELF_COMPACT_AUTO_TOKENS`, `PI_SELF_COMPACT_IDLE_MIN`, `PI_SELF_COMPACT_FILE_LISTS=all`, `PI_SELF_COMPACT_CACHED_SUMMARY=1` or `~/.pi/agent/self-compact-cached-summary` |
 | `subagent-cost.ts` | Session and subagent spend: footer chip by agent type and thinking level, machine-wide ledger, `/subagent-cost` reports | `/subagent-cost [types\|agents\|sessions\|issues\|daily] [session\|today\|week\|<N>d\|<N>h] [session:<name\|id\|this\|all>]`; ledger in `~/.pi/agent/subagent-ledger/` |
 
 ## subagent-cost.ts
@@ -183,8 +185,27 @@ header. All of it changes the provider request only, never the transcript.
    session already has the entry it wrote in its conversation. So when the
    only change is inside that block and the reason is a long-term write or a
    running compaction, the extension sends the previous system text. It takes
-   the new block on the first request after a load or a compaction, and at the
-   day change, so the dates stay right. Main session only.
+   the new block on the first request after a load or a compaction. At local
+   midnight it keeps the old block too, and adds a short message after the
+   history with the new date. `PI_CACHE_HOLD_ROLLOVER=0` takes the new block
+   instead. Main session only.
+   Cache effect: the request after a memory write wrote 13 tokens instead of
+   20,929. The request after midnight wrote 139 tokens instead of 13,105.
+7. **Keep-warm during long tool calls.** Subagents use the 5-minute cache. A
+   subagent that waits more than 5 minutes for a build or a test run loses it,
+   and its next request rewrites the whole context. While a tool call runs, the
+   extension re-sends the subagent's last request with a one-token cap every
+   4.5 minutes, for up to 60 minutes. Each ping's cost goes into the
+   `subagent-cost.ts` ledger under that subagent's id.
+   Cache effect: after a 5-minute wait, the next request wrote 89 tokens
+   instead of 12,844. A ping costs about $0.01 to $0.03.
+
+`recipes/scripts/rewrite-classify.py` names a cause for each cache rewrite
+from the session files alone: session start, compaction, model or thinking
+change, idle gap, memory write, day change, system-prompt change, or
+unexplained. It needs no debug log, so it also covers sessions from before you
+installed this extension. `--validate` compares it with
+`cache-debug-report.py`, and `--csv` writes one row per rewrite.
 
 Three related settings that are not in the extension:
 
@@ -203,6 +224,43 @@ Three related settings that are not in the extension:
   where pi sends effort as a mid-conversation message (Opus 5.5:
   `supportsMidConvoEffort`). On a model without it, a level change rewrites
   the whole cache once.
+
+## self-compact.ts
+
+For sessions that run for days and get work from several places (you,
+intercom, subagents, timers). You are often not there to run `/compact`
+between tasks, and a session that is not compacted sends its whole history on
+every request. Main session only. Events are logged to
+`~/.pi/agent/cache-debug/`.
+
+1. **The `self_compact` tool.** The agent calls it at a task boundary, with a
+   reason and an optional `keep` list of facts the summary must hold. Below
+   `PI_SELF_COMPACT_MIN_TOKENS` (default 150k) it does nothing. Above it, the
+   compaction runs once the run has ended and the session is idle, so no
+   request is sent during it. Add a line to your `AGENTS.md` that tells agents
+   to call it when a task ends and the next work is unrelated.
+2. **Idle backstop.** A session that settles above
+   `PI_SELF_COMPACT_AUTO_TOKENS` (default 400k, 0 turns it off) and stays idle
+   for `PI_SELF_COMPACT_IDLE_MIN` minutes (default 15) is compacted.
+3. **File lists.** pi adds `<read-files>` and `<modified-files>` to every
+   summary and carries the earlier lists forward, so they only grow. One
+   session's lists reached 643 paths, about 17k tokens on every request. The
+   extension keeps only the files from the span being summarized.
+   `PI_SELF_COMPACT_FILE_LISTS=all` keeps pi's behavior.
+4. **Cached summary (trial, off by default).** pi sends the conversation to
+   the summary call as one new text message, so that call reads nothing from
+   the cache. This part sends the session's last request unchanged, with the
+   summary instructions added at the end, so the conversation is a cache read.
+   It needs `cache-tuning.ts`. On any problem it falls back to pi's summary.
+   Turn it on with `PI_SELF_COMPACT_CACHED_SUMMARY=1`, or per session: put the
+   first 13 characters of the session id (or `*`) on a line of
+   `~/.pi/agent/self-compact-cached-summary`.
+   Cache effect: at 101k tokens, the summary call read 101,562 tokens from the
+   cache and cost $0.018.
+
+Cache effect of parts 1 and 2: one busy session averaged 517k tokens of
+context a request before, and 207k to 224k after. Its cost per request fell
+from $0.143 to $0.081 to $0.090.
 
 ## Safety notes
 
