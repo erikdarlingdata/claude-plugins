@@ -30,6 +30,7 @@ Fix small, mechanical, in-lane defects in the same PR the moment you notice them
 
 Every tool call re-reads your whole context. Batch independent commands into ONE call, don't re-read a file you just edited, and don't poll.
 
+- Time matters here: do not spend time that can be avoided, and the earlier a correct result is obtained, the better. Small in-lane fixes are part of a correct result.
 - Never paste full test output. Grep for `[FAIL]|Total:`.
 - Read files by offset/limit. Never read a whole large file.
 - Run targeted test classes while iterating. Run the FULL suite ONCE, at the end.
