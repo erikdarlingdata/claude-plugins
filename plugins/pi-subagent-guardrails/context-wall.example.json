@@ -1,5 +1,8 @@
 {
   "nudge": 100000,
+  "nudgeTypes": [
+    "lane"
+  ],
   "warn1": 150000,
   "warn2": 200000,
   "wall": 250000,

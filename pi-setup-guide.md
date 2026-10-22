@@ -208,6 +208,20 @@ stops the summary's file lists from growing. As a trial, it can write the
 summary from the cache. See the
 [recipe notes](recipes/extensions/README.md#self-compactts).
 
+### Trim large session files
+
+Compaction shortens what the model sees, but pi keeps every older entry in the
+session file. It loads all of them at start, and some code walks all of them.
+A session that ran for four weeks reached 271 MB, with 0.3% of it still in use.
+Its pi process went to 100% CPU because an extension's footer walked the whole
+file on every frame.
+
+[`plugins/pi-session-resume/bin/pi-trim-session`](plugins/pi-session-resume/README.md#trimming-large-session-files)
+shrinks a stopped session's file to what pi still uses, and gzips the full file
+to an archive first. The context the model sees does not change. Trim a session
+over about 50 MB at its next restart: `pi-resume-sessions --trim` does it for
+every session it reopens.
+
 ### Compaction budget on large-context models
 
 Pi caps the compaction summary at `min(0.8 × compaction.reserveTokens, model

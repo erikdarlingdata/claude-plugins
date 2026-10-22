@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""pi-trim-session: shrink a pi session file to what pi still uses.
+
+pi only sends the newest compaction summary and the entries after it, but it
+keeps every older entry in the file, loads all of them at start, and some code
+walks all of them. A seat that runs for weeks reaches hundreds of MB (one seat:
+271 MB, 72,000 entries, 0.3% of it still in use).
+
+The trimmed file has the same name and session id, so `pi --session <id>`,
+the session registry, the cost ledger and intercom names keep working. It holds:
+  - the header line (unchanged)
+  - every system message on the branch: pi replays them to rebuild the active
+    tool set, so dropping them leaves a resumed session without its tools
+  - the newest entry of each extension state type (custom entries), plus the
+    newest session_info, model_change and thinking_level_change, from before
+    the cut, so the session name, model, thinking level, open asks and other
+    extension state come back on resume
+  - web-search-results entries from the last --search-days days
+  - the active branch from the newest compaction's first kept entry to the leaf
+The carried entries are chained in file order ahead of the kept branch.
+
+The full original is gzipped to the archive folder first. To undo a trim:
+stop the seat, then  gunzip -c <archive> > <session file>.
+
+Refuses to run while the session's pi process is alive (session registry).
+
+Usage:
+  pi-trim-session <session-id-prefix|path> [--dry-run] [--archive-dir DIR]
+                  [--search-days N] [--min-mb N] [--json]
+  pi-trim-session --prune-archive [--keep-days 30] [--dry-run]
+"""
+import argparse, glob, gzip, json, os, shutil, subprocess, sys, time
+from datetime import datetime, timezone
+
+AGENT = os.environ.get("PI_CODING_AGENT_DIR", os.path.expanduser("~/.pi/agent"))
+SESSIONS = os.path.join(AGENT, "sessions")
+REGISTRY = os.path.join(AGENT, "session-registry")
+ARCHIVE = os.path.join(AGENT, "sessions-archive")
+CARRY_TYPES = ("session_info", "model_change", "thinking_level_change")
+
+
+def die(msg, code=2):
+    print(f"pi-trim-session: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def find_file(arg):
+    if os.path.isfile(arg):
+        return os.path.abspath(arg)
+    if len(arg) < 8:
+        die("give at least 8 characters of the session id, or a path")
+    hits = glob.glob(os.path.join(SESSIONS, "*", f"*_{arg}*.jsonl"))
+    if len(hits) != 1:
+        die(f"{len(hits)} session files match {arg!r}" + ("".join(f"\n  {h}" for h in hits[:10])))
+    return hits[0]
+
+
+def alive_pid(session_id, path):
+    """pid of a live pi process registered for this session file, else None."""
+    for f in glob.glob(os.path.join(REGISTRY, "*.json")):
+        try:
+            e = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        if e.get("sessionId") != session_id:
+            continue
+        reg = e.get("sessionFile") or ""
+        if reg and os.path.realpath(reg) != os.path.realpath(path):
+            continue  # a copy of the file, not the live one
+        pid = int(e.get("pid") or 0)
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        if cmd.strip().split(" ")[0].endswith("pi") or " pi " in f" {cmd} ":
+            return pid
+    return None
+
+
+def plan(path, search_days):
+    rows, sizes = [], []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            rows.append(json.loads(line))
+            sizes.append(len(line.encode("utf-8")))
+    if not rows or rows[0].get("type") != "session":
+        die("first line is not a session header")
+    header = rows[0]
+    by_id = {}
+    for i, r in enumerate(rows[1:], 1):
+        if r.get("id"):
+            by_id[r["id"]] = i
+    # The leaf is the newest entry with an id; walk its parent chain to the root.
+    leaf = next((i for i in range(len(rows) - 1, 0, -1) if rows[i].get("id")), None)
+    if leaf is None:
+        return None, "no entries"
+    branch, x, seen = [], rows[leaf]["id"], set()
+    while x and x in by_id and x not in seen:
+        seen.add(x)
+        i = by_id[x]
+        branch.append(i)
+        x = rows[i].get("parentId")
+    branch.reverse()
+    comps = [i for i in branch if rows[i].get("type") == "compaction"]
+    if not comps:
+        return None, "no compaction on the active branch"
+    fk = rows[comps[-1]].get("firstKeptEntryId")
+    if fk not in by_id or by_id[fk] not in branch:
+        return None, "newest compaction's first kept entry is not on the branch"
+    cut = branch.index(by_id[fk])
+    kept = branch[cut:]
+    kept_set = set(kept)
+    before = [i for i in range(1, len(rows)) if i not in kept_set and i < kept[0]]
+
+    carry = {}
+    branch_set = set(branch)
+    for i in before:
+        r = rows[i]
+        # pi rebuilds the active tool set by replaying every system message on the
+        # branch (agent-session _restoreToolsFromTranscript). Keep all of them.
+        if i in branch_set and r.get("type") == "message" and (r.get("message") or {}).get("role") == "system":
+            carry[("system", r["id"])] = i
+    for i in before:
+        r = rows[i]
+        t = r.get("type")
+        if t == "custom" and r.get("customType"):
+            carry[("custom", r["customType"])] = i
+        elif t in CARRY_TYPES and i in branch_set:
+            carry[(t, "")] = i
+    cutoff = time.time() - search_days * 86400
+    for i in before:
+        r = rows[i]
+        if r.get("type") == "custom" and r.get("customType") == "web-search-results":
+            try:
+                ts = datetime.fromisoformat(r["timestamp"].replace("Z", "+00:00")).timestamp()
+            except (KeyError, ValueError):
+                continue
+            if ts >= cutoff:
+                carry[("web-search", r["id"])] = i
+    carried = sorted(set(carry.values()))
+
+    # context_edit entries whose target is gone are dropped.
+    keep_ids = {rows[i]["id"] for i in carried + kept}
+    kept = [i for i in kept if not (rows[i].get("type") == "context_edit" and rows[i].get("targetId") not in keep_ids)]
+
+    out, prev = [header], None
+    for i in carried + kept:
+        r = dict(rows[i])
+        if i in carried or i == kept[0]:
+            r["parentId"] = prev
+        out.append(r)
+        prev = r["id"]
+    # Every parent must resolve inside the new file.
+    ids = {r["id"] for r in out[1:]}
+    bad = [r["id"] for r in out[1:] if r.get("parentId") is not None and r["parentId"] not in ids]
+    if bad:
+        return None, f"{len(bad)} entries would point at a dropped parent (first: {bad[0]})"
+    stats = {
+        "file": path,
+        "sessionId": header.get("id"),
+        "entriesBefore": len(rows),
+        "entriesAfter": len(out),
+        "carried": len(carried),
+        "carriedTypes": sorted({(rows[i].get("customType") or rows[i].get("type")) for i in carried}),
+        "keptBranch": len(kept),
+        "mbBefore": round(sum(sizes) / 1e6, 2),
+    }
+    return (out, stats), None
+
+
+def trim(args):
+    path = find_file(args.target)
+    mb = os.path.getsize(path) / 1e6
+    with open(path, encoding="utf-8") as fh:
+        sid = json.loads(fh.readline()).get("id", "")
+    if mb < args.min_mb:
+        print(f"skip {os.path.basename(path)}: {mb:.1f} MB is under {args.min_mb} MB")
+        return 0
+    pid = alive_pid(sid, path)
+    if pid and args.dry_run:
+        print(f"note: session {sid[:13]} is running (pi pid {pid}); a real trim would refuse")
+    elif pid:
+        die(f"session {sid[:13]} is running (pi pid {pid}). Quit it first.", 3)
+    result, why = plan(path, args.search_days)
+    if result is None:
+        print(f"skip {os.path.basename(path)}: {why}")
+        return 0
+    out, stats = result
+    text = "".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n" for r in out)
+    stats["mbAfter"] = round(len(text.encode("utf-8")) / 1e6, 2)
+    if args.dry_run:
+        stats["dryRun"] = True
+        print(json.dumps(stats) if args.json else
+              f"would trim {os.path.basename(path)}: {stats['mbBefore']} MB -> {stats['mbAfter']} MB, "
+              f"{stats['entriesBefore']} -> {stats['entriesAfter']} entries (carried {stats['carried']}: {', '.join(stats['carriedTypes'])})")
+        return 0
+    os.makedirs(args.archive_dir, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    arch = os.path.join(args.archive_dir, f"{os.path.basename(path)[:-6]}.{stamp}.jsonl.gz")
+    with open(path, "rb") as src, gzip.open(arch, "wb", compresslevel=6) as dst:
+        shutil.copyfileobj(src, dst, 1 << 20)
+    # Check the archive before replacing anything.
+    n = 0
+    with gzip.open(arch, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            n += len(chunk)
+    if n != os.path.getsize(path):
+        die(f"archive check failed ({n} bytes vs {os.path.getsize(path)}); nothing changed", 4)
+    if alive_pid(sid, path):
+        os.remove(arch)
+        die("the session started while trimming; nothing changed", 3)
+    tmp = path + ".trim-tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+    stats["archive"] = arch
+    stats["archiveMb"] = round(os.path.getsize(arch) / 1e6, 2)
+    print(json.dumps(stats) if args.json else
+          f"trimmed {os.path.basename(path)}: {stats['mbBefore']} MB -> {stats['mbAfter']} MB "
+          f"({stats['entriesBefore']} -> {stats['entriesAfter']} entries). Archive: {arch} ({stats['archiveMb']} MB)")
+    return 0
+
+
+def prune(args):
+    cutoff = time.time() - args.keep_days * 86400
+    gone = 0
+    for f in sorted(glob.glob(os.path.join(args.archive_dir, "*.jsonl.gz"))):
+        if os.path.getmtime(f) < cutoff:
+            print(("would delete " if args.dry_run else "deleted ") + f)
+            if not args.dry_run:
+                os.remove(f)
+            gone += 1
+    print(f"{gone} archive(s) older than {args.keep_days} days")
+    return 0
+
+
+def main():
+    p = argparse.ArgumentParser(description="Shrink a pi session file to what pi still uses.")
+    p.add_argument("target", nargs="?", help="session id prefix (8+ characters) or path")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--archive-dir", default=ARCHIVE)
+    p.add_argument("--search-days", type=float, default=1)
+    p.add_argument("--min-mb", type=float, default=0)
+    p.add_argument("--prune-archive", action="store_true")
+    p.add_argument("--keep-days", type=float, default=30)
+    a = p.parse_args()
+    if a.prune_archive:
+        return prune(a)
+    if not a.target:
+        p.error("give a session id or path")
+    return trim(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

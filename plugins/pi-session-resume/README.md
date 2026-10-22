@@ -14,6 +14,7 @@ with their full conversation history.
 | --- | --- |
 | `extensions/session-registry.ts` | auto-loaded by pi; tracks every open interactive session in `~/.pi/agent/session-registry/` |
 | `bin/pi-resume-sessions` | reads the registry and reopens every interrupted session |
+| `bin/pi-trim-session` | shrinks a stopped session's file to what pi still uses, and archives the full file |
 
 ## Install
 
@@ -23,11 +24,13 @@ The extension loads automatically once this package is installed:
 pi install git:github.com/erikdarlingdata/claude-plugins
 ```
 
-The script needs to be on your PATH. Symlink it out of pi's package clone:
+The scripts need to be on your PATH. Symlink them out of pi's package clone:
 
 ```bash
 ln -s ~/.pi/agent/git/github.com/erikdarlingdata/claude-plugins/plugins/pi-session-resume/bin/pi-resume-sessions \
   /usr/local/bin/pi-resume-sessions
+ln -s ~/.pi/agent/git/github.com/erikdarlingdata/claude-plugins/plugins/pi-session-resume/bin/pi-trim-session \
+  /usr/local/bin/pi-trim-session
 ```
 
 (Or copy the two files by hand — the extension goes anywhere in
@@ -61,6 +64,41 @@ pi-resume-sessions --clean      # forget all dead entries instead of resuming
 
 Safe to run anytime, not just after a reboot: sessions that are still running
 are skipped, and a resumed session immediately re-registers itself.
+
+## Trimming large session files
+
+pi only sends the newest compaction summary and the entries after it. It still
+keeps every older entry in the session file, loads all of them at start, and
+some code walks all of them. A session that runs for weeks can reach hundreds
+of MB. One measured session: 271 MB and 72,000 entries, of which 0.3% was still
+in use. Its pi process used 715 MB at peak and took 1.1 s to start. Trimmed:
+3.4 MB, 181 MB and 0.3 s.
+
+`bin/pi-trim-session` shrinks a stopped session's file to what pi still uses:
+
+- the header, with the same session id, so `pi --session <id>` still works
+- every system message on the branch (pi replays them to rebuild the active tool set)
+- the newest entry of each extension state type, plus the newest session name,
+  model and thinking-level entries
+- the active branch from the newest compaction's first kept entry to the leaf
+
+The full original is gzipped to `~/.pi/agent/sessions-archive/` first, and the
+script checks the archive before it replaces anything. It refuses to run while
+the session's pi process is alive. To undo a trim, stop the session and run
+`gunzip -c <archive> > <session file>`.
+
+```bash
+pi-trim-session <session-id-prefix> --dry-run   # show the before and after sizes
+pi-trim-session <session-id-prefix>             # trim it
+pi-trim-session --prune-archive --keep-days 30  # delete old archives
+pi-resume-sessions --trim                       # trim sessions over 50 MB, then resume
+pi-resume-sessions --trim --trim-over 100       # a different size limit
+```
+
+What you lose: `/tree` can't go back past the last compaction, and raw messages
+from before it are only in the archive. The context the model sees does not
+change. In tests on five sessions, the tool set, system prompt, messages,
+model, thinking level and session name were identical before and after.
 
 ## What gets resumed, and what doesn't
 
