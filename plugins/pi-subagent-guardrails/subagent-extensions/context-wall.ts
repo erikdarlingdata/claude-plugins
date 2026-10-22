@@ -5,8 +5,12 @@
  * usage audit of one multi-agent orchestration found that 0 of 39 subagents honored them). The subagent watchdog
  * can see the size, but it reports to the PARENT, and each report wakes the parent's whole (often huge) context. This tells the child directly:
  *
- *   - nudge (100k): a one-time notice if the agent has not edited any code yet (investigation eating the budget).
- *   - warn1 / warn2: one-time notices (they lead with "nothing is pushed yet" until a git push / gh pr create) appended to a tool result the agent is already reading.
+ *   - nudge (100k): a one-time notice if a code-writing agent (types in `nudgeTypes`, default lane and lane-*) has
+ *     not edited any code yet (investigation eating the budget). Read-only types (worker, reviewer, scout, ...) never
+ *     get it: for them, no code edits is the job, and the notice once stopped a measurement worker early.
+ *   - warn1 / warn2: one-time notices appended to a tool result the agent is already reading. An agent that edited
+ *     code and has not run git push / gh pr create yet is told to push a draft PR first; any other agent is told to
+ *     put its report in its final message.
  *   - wall: every tool call is blocked EXCEPT shell commands made only of git / gh / docker rm|stop|kill (optionally with cd / export
  *     segments; pipes after them are fine) and write/edit to .md/.txt files. The agent can still commit, push and
  *     write its report, then stop, instead of being aborted with its work and report lost.
@@ -45,7 +49,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const DEFAULTS = { nudge: 100_000, warn1: 150_000, warn2: 200_000, wall: 250_000 };
-type Limits = typeof DEFAULTS & { warnMinutes: number | null; wallMinutes: number | null };
+const DEFAULT_NUDGE_TYPES = ["lane"];
+type Limits = typeof DEFAULTS & { warnMinutes: number | null; wallMinutes: number | null; nudgeTypes: string[] };
 
 const positive = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
 const readJson = (path: string): Record<string, unknown> | null => {
@@ -83,12 +88,37 @@ export function readLimits(): Limits {
       warn1: pick("warn1"),
       warn2: pick("warn2"),
       wall: pick("wall"),
+      nudgeTypes: Array.isArray(raw?.nudgeTypes)
+        ? (raw!.nudgeTypes as unknown[]).filter((t): t is string => typeof t === "string" && t.trim() !== "")
+        : DEFAULT_NUDGE_TYPES,
       ...minuteLimits(raw, readJson(join(dir, "subagent-watchdog.json"))),
     };
   } catch {
-    return { ...DEFAULTS, warnMinutes: null, wallMinutes: null };
+    return { ...DEFAULTS, warnMinutes: null, wallMinutes: null, nudgeTypes: DEFAULT_NUDGE_TYPES };
   }
 }
+
+/** The agent type from pi-subagents' session name (`<type>#<id>`), or null when the session has no name. */
+export function agentTypeOf(sessionName: unknown): string | null {
+  if (typeof sessionName !== "string" || sessionName.trim() === "") return null;
+  return sessionName.split("#")[0].trim() || null;
+}
+
+/**
+ * Whether the no-code-yet nudge applies to this agent type. A type matches a listed type exactly or as
+ * `<type>-<suffix>` (lane matches lane-opus). An unknown type keeps the nudge, as before this check existed.
+ */
+export function nudgeApplies(agentType: string | null, nudgeTypes: string[]): boolean {
+  if (agentType == null) return true;
+  const t = agentType.toLowerCase();
+  return nudgeTypes.some((n) => t === n.toLowerCase() || t.startsWith(`${n.toLowerCase()}-`));
+}
+
+/** What to do with the work, for the wrap-up notices: code changes go to a PR, anything else to the final message. */
+const handoff = (codeEdited: boolean) =>
+  codeEdited
+    ? "commit and push your changes, put your report in the PR body"
+    : "put your report in your final message (you have not edited code, so there is nothing to push)";
 
 const fmtK = (n: number) => `${Math.round(n / 1000)}k`;
 
@@ -261,8 +291,11 @@ export default function contextWall(pi: ExtensionAPI) {
         block: true,
         reason:
           `context-wall: ${why}. Only git/gh commands ` +
-          `and writes to .md/.txt files run now. Commit and push what you have, put your report in the PR body ` +
-          `(gh pr edit --body-file) or a .md note, then end your turn with a final message of 400 words or fewer. ` +
+          `and writes to .md/.txt files run now. ` +
+          (codeEdited
+            ? `Commit and push what you have, put your report in the PR body (gh pr edit --body-file) or a .md note, `
+            : `Put your report in your final message, `) +
+          `then end your turn with a final message of 400 words or fewer. ` +
           `This is not a bug, and there is no override.`,
       };
     } catch {
@@ -280,13 +313,16 @@ export default function contextWall(pi: ExtensionAPI) {
           `commands and .md/.txt writes is blocked.` : "";
         const text =
           `\n\n[context-wall] You have run ${Math.floor(mins)} minute${Math.floor(mins) === 1 ? "" : "s"}. Start no new step and no full test run. ` +
-          `Commit, push, put your report in the PR body, and end your turn.${wallAt}`;
+          `Then ${handoff(codeEdited)}, and end your turn.${wallAt}`;
         return { content: [...(event.content ?? []), { type: "text" as const, text }] };
       }
       const m = measure(ctx);
       if (m == null) return undefined;
       const level = m.judged >= limits.warn2 ? 2 : m.judged >= limits.warn1 ? 1 : 0;
-      if (level === 0 && !nudged && !codeEdited && m.judged >= limits.nudge) {
+      const agentType = agentTypeOf(
+        (ctx as { sessionManager?: { getSessionName?: () => unknown } })?.sessionManager?.getSessionName?.(),
+      );
+      if (level === 0 && !nudged && !codeEdited && m.judged >= limits.nudge && nudgeApplies(agentType, limits.nudgeTypes)) {
         nudged = true;
         const text =
           `\n\n[context-wall] You are at ${fmtK(m.judged)} and have not edited any code yet. Stop investigating. ` +
@@ -296,13 +332,14 @@ export default function contextWall(pi: ExtensionAPI) {
       }
       if (level <= warned) return undefined;
       warned = level;
-      const unpushed = pushed ? "" : "Nothing is pushed yet: commit and push a draft PR before any other step. ";
+      const unpushed =
+        codeEdited && !pushed ? "You have code changes and nothing is pushed yet: commit and push a draft PR before any other step. " : "";
       const lead =
         unpushed +
         (level === 1
-          ? `You are past the ~${fmtK(limits.warn1)} handoff line. Finish the step you are on, then commit, push, ` +
-            `put your report in the PR body, and end your turn.`
-          : `This is the last warning before the wall. Wrap up now.`);
+          ? `You are past the ~${fmtK(limits.warn1)} handoff line. Finish the step you are on, then ` +
+            `${handoff(codeEdited)}, and end your turn.`
+          : `This is the last warning before the wall. Wrap up now: ${handoff(codeEdited)}.`);
       const text =
         `\n\n[context-wall] You are at ${fmtK(m.judged)} (${describe(m)}; warning ${level} of 2). ${lead} ` +
         `At ${fmtK(limits.wall)}, every tool except git/gh commands and .md/.txt writes is blocked.`;

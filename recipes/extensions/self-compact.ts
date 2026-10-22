@@ -173,10 +173,19 @@ export default function (pi: ExtensionAPI) {
 			(event.customInstructions ? `\n\nAdditional focus: ${event.customInstructions}` : "");
 		payload.messages.push({ role: "user", content: [{ type: "text", text: instructions }] });
 		const t0 = Date.now();
-		const msg: any = await last.registry
-			.streamSimple(last.model, { messages: [] }, { maxRetries: 1, signal: event.signal, onPayload: () => payload })
-			.result();
-		if (msg?.stopReason === "error" || msg?.errorMessage) throw new Error(`summary call failed: ${msg?.errorMessage ?? msg?.stopReason}`);
+		// A dropped stream ("terminated", seen 2026-10-19 after 77 s) gets one more try,
+		// as pi's own summary call does. The retry still reads the cache.
+		let msg: any;
+		for (let attempt = 1; ; attempt++) {
+			msg = await last.registry
+				.streamSimple(last.model, { messages: [] }, { maxRetries: 1, signal: event.signal, onPayload: () => payload })
+				.result();
+			const err = msg?.stopReason === "error" || msg?.errorMessage ? String(msg?.errorMessage ?? msg?.stopReason) : "";
+			if (!err) break;
+			if (attempt >= 2 || event.signal?.aborted || !/terminated|socket|ECONNRESET|network|timed? ?out|overloaded|\b5\d\d\b/i.test(err))
+				throw new Error(`summary call failed (attempt ${attempt}): ${err}`);
+			log({ type: "cached-summary-retry", why: err.slice(0, 200), secs: Math.round((Date.now() - t0) / 1000) });
+		}
 		if ((msg?.content ?? []).some((b: any) => b?.type === "toolCall")) throw new Error("summary call tried to call a tool");
 		let summary = (msg?.content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n").trim();
 		if (summary.length < 500) throw new Error(`summary too short (${summary.length} chars)`);

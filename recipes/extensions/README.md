@@ -256,7 +256,10 @@ every request. Main session only. Events are logged to
    first 13 characters of the session id (or `*`) on a line of
    `~/.pi/agent/self-compact-cached-summary`.
    Cache effect: at 101k tokens, the summary call read 101,562 tokens from the
-   cache and cost $0.018.
+   cache and cost $0.018. Over 9 real compactions of 213k to 514k tokens, it
+   cost $0.16 to $0.33 each, against $0.92 to $1.11 for pi's summary of the
+   same session. A dropped stream gets one retry. Any other failure falls back
+   to pi's summary.
 
 Cache effect of parts 1 and 2: one busy session averaged 517k tokens of
 context a request before, and 207k to 224k after. Its cost per request fell

@@ -23,6 +23,12 @@
 #   --named-only       only resume sessions you named (pi -n / /name)
 #   --all              ignore all filters, resume everything dead
 #
+# Trimming:
+#   --trim             before resuming, run pi-trim-session on each session
+#                      file larger than --trim-over MB (default 50). The full
+#                      file is gzipped to ~/.pi/agent/sessions-archive first.
+#   --trim-over <MB>   size limit for --trim
+#
 # Modes:
 #   pi-resume-sessions [flags]    resume interrupted sessions (newest first)
 #   pi-resume-sessions --list     show the registry (state/age per entry)
@@ -46,9 +52,14 @@ if [ "$OS" = "Darwin" ]; then TARGET="ghostty"; else TARGET="tmux"; fi
 MAX_AGE_H="${PI_RESUME_MAX_AGE_HOURS:-72}"
 ALL=0
 NAMED_ONLY=0
+TRIM=0
+TRIM_OVER_MB=50
+# pi-trim-session lives beside this script in the package; follow a symlink to find it, else use PATH.
+TRIMMER="$(dirname "$(realpath "$0" 2>/dev/null || echo "$0")")/pi-trim-session"
+[ -x "$TRIMMER" ] || TRIMMER="$(command -v pi-trim-session 2>/dev/null || echo "$TRIMMER")"
 
 usage() {
-  echo "usage: pi-resume-sessions [--ghostty|--tmux|--terminal] [--max-age <hours>] [--named-only] [--all] [--list|--dry-run|--clean]" >&2
+  echo "usage: pi-resume-sessions [--ghostty|--tmux|--terminal] [--max-age <hours>] [--named-only] [--all] [--trim [--trim-over <MB>]] [--list|--dry-run|--clean]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -61,6 +72,9 @@ while [ $# -gt 0 ]; do
     --terminal)   TARGET="terminal" ;;
     --all)        ALL=1 ;;
     --named-only) NAMED_ONLY=1 ;;
+    --trim)       TRIM=1 ;;
+    --trim-over)  shift; [ $# -gt 0 ] || { usage; exit 2; }; TRIM_OVER_MB="$1" ;;
+    --trim-over=*) TRIM_OVER_MB="${1#*=}" ;;
     --max-age)    shift; [ $# -gt 0 ] || { usage; exit 2; }; MAX_AGE_H="$1" ;;
     --max-age=*)  MAX_AGE_H="${1#*=}" ;;
     *) usage; exit 2 ;;
@@ -68,6 +82,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$MAX_AGE_H" in ''|*[!0-9]*) echo "pi-resume-sessions: --max-age must be a number of hours" >&2; exit 2 ;; esac
+case "$TRIM_OVER_MB" in ''|*[!0-9]*) echo "pi-resume-sessions: --trim-over must be a whole number of MB" >&2; exit 2 ;; esac
+if [ "$TRIM" -eq 1 ] && [ ! -x "$TRIMMER" ]; then echo "pi-resume-sessions: $TRIMMER not found" >&2; exit 1; fi
 if [ "$OS" != "Darwin" ] && { [ "$TARGET" = "ghostty" ] || [ "$TARGET" = "terminal" ]; }; then
   echo "pi-resume-sessions: --$TARGET is macOS-only; use --tmux" >&2
   exit 2
@@ -183,6 +199,16 @@ while IFS=$'\t' read -r mtime f; do
   fi
 
   [ -d "$cwd" ] || cwd="$HOME"
+
+  # Trim large session files before reopening them (the session is dead here).
+  if [ "$TRIM" -eq 1 ]; then
+    if [ "$MODE" = "dry" ]; then
+      "$TRIMMER" "$sfile" --dry-run --min-mb "$TRIM_OVER_MB" | sed "s/^/  [$label] /"
+    else
+      "$TRIMMER" "$sfile" --min-mb "$TRIM_OVER_MB" | sed "s/^/  [$label] /" \
+        || echo "  [$label] trim failed; resuming the untrimmed file" >&2
+    fi
+  fi
 
   if [ "$MODE" = "dry" ]; then
     echo "would resume ($TARGET): $label (${id:0:8}) idle $age, in $cwd"

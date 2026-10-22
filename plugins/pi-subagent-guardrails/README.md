@@ -28,9 +28,9 @@ The wall talks to the child instead:
 
 | Judged size | What happens |
 |---|---|
-| 100k (`nudge`) | Only if the agent has not edited any code yet (write/edit to anything but `.md`/`.txt`): a one-time notice to stop investigating, make the smallest change that meets the brief, and push a draft PR. Added after two lanes spent their whole budget reading and shipped nothing. |
-| 150k (`warn1`) | A one-time `[context-wall]` notice is appended to the tool result the agent is already reading: finish the step, commit, push, report, stop. |
-| 200k (`warn2`) | One last notice. Until the agent has run a `git push` or `gh pr create`, both notices lead with "nothing is pushed yet: push a draft PR first." |
+| 100k (`nudge`) | Only for code-writing agent types (`nudgeTypes`, default `["lane"]`, which also matches `lane-*`), and only if the agent has not edited any code yet (write/edit to anything but `.md`/`.txt`): a one-time notice to stop investigating, make the smallest change that meets the brief, and push a draft PR. Added after two lanes spent their whole budget reading and shipped nothing. Read-only types (worker, reviewer, scout, planner) never get it: for them, no code edits is the job. The type comes from the session name pi-subagents gives the child (`<type>#<id>`). |
+| 150k (`warn1`) | A one-time `[context-wall]` notice is appended to the tool result the agent is already reading: finish the step, hand off, stop. An agent that edited code is told to commit, push and put its report in the PR body. Any other agent is told to put its report in its final message. |
+| 200k (`warn2`) | One last notice. If the agent edited code and has not run `git push` or `gh pr create`, both notices lead with "nothing is pushed yet: push a draft PR first." |
 | 250k (`wall`) | Every tool call is refused **except** shell commands made of `git`/`gh` or `docker rm`/`stop`/`kill` (with `cd`/`export` segments and trailing pipes allowed) and writes to `.md`/`.txt` files. The agent can still commit, push and write its report; it just can't keep working. |
 
 The **judged size** is the larger of live context (`ctx.getContextUsage()`) and total token use (input + output +
@@ -53,7 +53,8 @@ cherry-pick, revert, am, apply, read-tree, update-index, checkout-index, gc or p
 one is refused too. Reading still works: `git show`, `log`, `diff`, `status`, `fetch`, `grep`, `worktree add`, `sed`
 and `cat`. The refusal points the agent at `git show <ref>:<path>`. Why: a read-only scout once ran
 `git checkout <branch> -- .` and then `git checkout dev -- .` in its parent's main checkout to read a branch's files,
-and overwrote that checkout's staged work. Self-test: `node --experimental-strip-types tools/context-wall-selftest.mts`.
+and overwrote that checkout's staged work. Self-tests: `node --experimental-strip-types tools/context-wall-selftest.mts` (protected checkouts) and
+`node --experimental-strip-types tools/context-wall-notices-selftest.mts` (which agents get which notice).
 
 It fails open: any error is a no-op, so a bug can't block or spam an agent. It's a budget wall, not a security
 sandbox (a `$(...)` inside a git command still runs).
@@ -73,7 +74,7 @@ Add the line to each agent file in `~/.pi/agent/agents/` whose children should b
 reviewer, and so on). `agents/lane.md` already has it.
 
 Thresholds live in `~/.pi/agent/context-wall.json` (copy [`context-wall.example.json`](context-wall.example.json)).
-The file is read on every call, so no reload is needed. A missing file or bad values fall back to 100k / 150k / 200k / 250k, and no protected checkouts.
+The file is read on every call, so no reload is needed. A missing file or bad values fall back to 100k / 150k / 200k / 250k, `nudgeTypes: ["lane"]`, and no protected checkouts.
 
 **Smoke test:** set `{"warn1": 1, "warn2": 900000000, "wall": 2}`, spawn a cheap subagent that runs `ls` and then
 `git --version`, and check that `ls` is refused with a `context-wall:` reason while `git` runs and carries the
