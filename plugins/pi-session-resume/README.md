@@ -59,11 +59,18 @@ hacks, so Ghostty is the default.
 ```bash
 pi-resume-sessions --list       # audit: state (live/dead), age, name, cwd
 pi-resume-sessions --dry-run    # show what would happen
+pi-resume-sessions --commands   # print a resume command for each running session
 pi-resume-sessions --clean      # forget all dead entries instead of resuming
 ```
 
 Safe to run anytime, not just after a reboot: sessions that are still running
 are skipped, and a resumed session immediately re-registers itself.
+
+Run `--commands` before you close sessions by hand. It prints one line per
+running session, such as
+`cd /home/me && pi --session 01a0...   # build-seat`. Paste a line into a new
+terminal tab to resume that session. Add `--all` to include recent sessions
+that are no longer running (within `--max-age`).
 
 ## Trimming large session files
 

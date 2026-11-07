@@ -32,6 +32,9 @@
 # Modes:
 #   pi-resume-sessions [flags]    resume interrupted sessions (newest first)
 #   pi-resume-sessions --list     show the registry (state/age per entry)
+#   pi-resume-sessions --commands print a `cd <cwd> && pi --session <id>` line
+#                                 for each running session (add --all for
+#                                 recent dead ones too, within --max-age)
 #   pi-resume-sessions --dry-run  show what would be resumed, do nothing
 #   pi-resume-sessions --clean    delete entries for ALL dead sessions
 #                                 ("forget the interrupted")
@@ -59,12 +62,13 @@ TRIMMER="$(dirname "$(realpath "$0" 2>/dev/null || echo "$0")")/pi-trim-session"
 [ -x "$TRIMMER" ] || TRIMMER="$(command -v pi-trim-session 2>/dev/null || echo "$TRIMMER")"
 
 usage() {
-  echo "usage: pi-resume-sessions [--ghostty|--tmux|--terminal] [--max-age <hours>] [--named-only] [--all] [--trim [--trim-over <MB>]] [--list|--dry-run|--clean]" >&2
+  echo "usage: pi-resume-sessions [--ghostty|--tmux|--terminal] [--max-age <hours>] [--named-only] [--all] [--trim [--trim-over <MB>]] [--list|--commands|--dry-run|--clean]" >&2
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --list)       MODE="list" ;;
+    --commands)   MODE="commands" ;;
     --dry-run)    MODE="dry" ;;
     --clean)      MODE="clean" ;;
     --ghostty)    TARGET="ghostty" ;;
@@ -166,6 +170,12 @@ while IFS=$'\t' read -r mtime f; do
       printf '%-6s %-6s %-8s %-28.28s %s\n' "$alive" "$age" "${id:0:8}" "$label" "$cwd"
       continue
       ;;
+    commands)
+      if [ "$alive" = "live" ] || { [ "$ALL" -eq 1 ] && [ "$age_h" -le "$MAX_AGE_H" ] && [ -f "$sfile" ]; }; then
+        printf 'cd %q && pi --session %s   # %s\n' "$cwd" "$id" "$label"
+      fi
+      continue
+      ;;
     clean)
       if [ "$alive" = "dead" ]; then
         rm -f "$f"
@@ -230,7 +240,7 @@ report_stale() {
 }
 
 case "$MODE" in
-  list)  exit 0 ;;
+  list|commands) exit 0 ;;
   clean) echo "cleaned $cleaned dead entr$( [ "$cleaned" = 1 ] && echo y || echo ies)"; exit 0 ;;
   dry)   echo "dry run: $count would be resumed, $skipped still running"; report_stale; exit 0 ;;
 esac
