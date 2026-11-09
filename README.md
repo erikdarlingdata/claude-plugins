@@ -60,6 +60,23 @@ execution, and recognizes the optimizer's default-guess selectivity fingerprints
 Requires Python 3 (standard library only). Without it, the skill degrades to a
 documented `grep`-based fallback and says plainly what it cannot determine.
 
+### `sqlserver-before-you-ship`
+
+The agent version of [Before You Ship That](https://erikdarling.com/before-you-ship), a chart of the
+trade-offs to check before shipping SQL Server code.
+
+```
+/plugin install sqlserver-before-you-ship@erikdarling
+```
+
+Ask for a review of a query, a table, or an index change, or point Claude at
+a pull request that touches T-SQL. The skill is model-invoked.
+
+It has 54 cards. Each one gives one action and what it costs, what it risks,
+how fast it works, and when it backfires. The skill walks the same questions
+as the web version, and reads the card for each one that applies before
+saying anything about it.
+
 ## GitHub Copilot CLI
 
 This plugin also works in [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli/),
@@ -68,6 +85,7 @@ which reads the same `SKILL.md` and `plugin.json` format.
 ```
 copilot plugin marketplace add erikdarlingdata/claude-plugins
 copilot plugin install sqlserver-query-plans@erikdarling
+copilot plugin install sqlserver-before-you-ship@erikdarling
 ```
 
 Or add just the skill, without the marketplace:

@@ -50,6 +50,42 @@
       ]
     },
     {
+      "name": "sqlserver-before-you-ship",
+      "displayName": "SQL Server: Before You Ship That",
+      "source": "./plugins/sqlserver-before-you-ship",
+      "description": "Trade-offs to check before shipping SQL Server code: 54 cards from the Before You Ship That chart, each with one action and what it costs, what it risks, how fast it works, and when it backfires. Covers new and existing queries, tables, and indexes.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Erik Darling",
+        "email": "erik@erikdarling.com",
+        "url": "https://erikdarling.com"
+      },
+      "homepage": "https://erikdarling.com",
+      "repository": "https://github.com/erikdarlingdata/claude-plugins",
+      "license": "MIT",
+      "category": "database",
+      "keywords": [
+        "sql-server",
+        "mssql",
+        "tsql",
+        "code-review",
+        "performance",
+        "indexing",
+        "query-tuning",
+        "database-design"
+      ],
+      "tags": [
+        "sql-server",
+        "mssql",
+        "tsql",
+        "code-review",
+        "performance",
+        "indexing",
+        "query-tuning",
+        "database-design"
+      ]
+    },
+    {
       "name": "subagent-fence",
       "displayName": "Subagent Fence",
       "source": "./plugins/subagent-fence",

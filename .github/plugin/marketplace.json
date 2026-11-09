@@ -14,6 +14,12 @@
       "description": "Read a SQL Server execution plan and explain what is actually slow, and why. Prevents the standard wrong conclusions: cost percentages read as measurements, operators ranked by cumulative time, estimated rows compared to actual without dividing by executions, and missing-index DDL pasted verbatim.",
       "version": "1.5.6",
       "source": "./plugins/sqlserver-query-plans"
+    },
+    {
+      "name": "sqlserver-before-you-ship",
+      "description": "Trade-offs to check before shipping SQL Server code: 54 cards from the Before You Ship That chart, each with one action and what it costs, what it risks, how fast it works, and when it backfires. Covers new and existing queries, tables, and indexes.",
+      "version": "1.0.0",
+      "source": "./plugins/sqlserver-before-you-ship"
     }
   ]
 }
