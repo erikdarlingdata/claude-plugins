@@ -20,7 +20,7 @@ Immediate. The next query that can use it, uses it, and so does every query you 
 
 ## When it backfires
 
-Intentionally left blank.
+An `INCLUDE` on a column the workload updates. An index on `c1` alone sits out every update to `age`, and with `age` in its `INCLUDE` list, every one of those updates maintains it. In the dive, the locks that one index added pushed a 4,500-row update to an escalation check it never used to reach, and the whole table ended up under one `X` lock.
 
 ## Deeper dive
 

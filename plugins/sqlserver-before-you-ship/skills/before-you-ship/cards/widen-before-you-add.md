@@ -18,7 +18,7 @@ Immediate once built. The build itself takes time, log, and tempdb on big tables
 
 ## When it backfires
 
-Nothing to see here. Go widen something.
+The index you widened was unique or filtered, and the new definition dropped the `UNIQUE` or the `WHERE` clause, so a guarantee or a filter someone depended on is gone. Widening the clustered index is its own case: every nonclustered index carries its key, so they all get wider too. And `DROP_EXISTING` without `ONLINE = ON` holds a schema modification lock for the whole rebuild, which blocks reads as well as writes, so use `ONLINE = ON` where the edition allows.
 
 ## Deeper dive
 
@@ -95,7 +95,7 @@ ON dbo.WidenDemo
 INCLUDE
     (order_date, amount)
 WITH
-    (DROP_EXISTING = ON);
+    (DROP_EXISTING = ON, DATA_COMPRESSION = PAGE);
 ```
 
 Same query: one seek, 12 reads, and the request is gone. [DROP_EXISTING](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-index-transact-sql) swaps the definition in one operation, so there's no window where queries run without the index.

@@ -40,14 +40,16 @@ DECLARE
             SELECT
                 user_id = 1
             UNION ALL
-            SELECT TOP (99)
-                v.user_id
-            FROM dbo.Votes AS v
-            WHERE v.user_id > 1
-            GROUP BY
-                v.user_id
-            ORDER BY
-                v.user_id
+            (
+                SELECT TOP (99)
+                    v.user_id
+                FROM dbo.Votes AS v
+                WHERE v.user_id > 1
+                GROUP BY
+                    v.user_id
+                ORDER BY
+                    v.user_id
+            )
         ) AS x
     );
 

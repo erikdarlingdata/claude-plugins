@@ -176,7 +176,7 @@ GO
 
 The switch logged about 1 KB, and the merge about 10 KB. The archive table has no `CHECK` constraint and no [IDENTITY](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-table-transact-sql-identity-property), and switching out needs neither.
 
-Each `SET LOCK_TIMEOUT -1` runs in its own batch, because a lock timeout ends the batch it happens in. The card [Some ALTERs are free. Some aren't.](some-alters-are-free-some-aren-t.md) has that pattern, and [Index work on a live table](index-work-on-a-live-table.md) covers what `MAX_DURATION` and `ABORT_AFTER_WAIT` do.
+Each `SET LOCK_TIMEOUT -1` runs in its own batch, because a lock timeout (error 1222) ends the statement, or the whole batch when `XACT_ABORT` is on. The card [Some ALTERs are free. Some aren't.](some-alters-are-free-some-aren-t.md) has that pattern, and [Index work on a live table](index-work-on-a-live-table.md) covers what `MAX_DURATION` and `ABORT_AFTER_WAIT` do.
 
 [RCSI](https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-transaction-locking-and-row-versioning-guide) (Read Committed Snapshot Isolation) and optimized locking don't shorten the switch's wait for its schema modification lock, because readers still need a schema stability lock. In a test, a reader of another month waited as long with both on as with neither.
 

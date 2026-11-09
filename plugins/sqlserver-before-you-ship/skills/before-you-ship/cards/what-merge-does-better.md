@@ -21,11 +21,47 @@ Immediately. Duplicate source rows fail the statement with error 8672 the first 
 
 ## When it backfires
 
-You were warned at the door.
+A `USING` source that isn't unique on the join key. It passes every test where the source happens to be clean, then throws error 8672 in production the first time two source rows match one target row, and the statement rolls back. Make the source unique with `ROW_NUMBER` the way the dive does, and watch the `ORDER BY`: if it can tie, the winner is arbitrary and can change from run to run.
 
 ## Deeper dive
 
-The `OUTPUT` upside matters most with inserts. Say you're copying rows into a table with an identity column and need to know which new `Id` each old row got, which `INSERT`'s `OUTPUT` can't tell you, because it can only see `inserted` columns. `MERGE`'s can see the source too:
+The `OUTPUT` upside matters most with inserts. Say you're copying rows into a table with an identity column and need to know which new `Id` each old row got, which `INSERT`'s `OUTPUT` can't tell you, because it can only see `inserted` columns. `MERGE`'s can see the source too. A target with an identity, a staging table with the old keys, and a table for the map:
+
+```sql
+CREATE TABLE
+    dbo.Target
+(
+    Id integer IDENTITY NOT NULL
+        PRIMARY KEY CLUSTERED,
+    Name nvarchar(50) NOT NULL
+);
+
+CREATE TABLE
+    #Staging
+(
+    OldId integer NOT NULL,
+    Name nvarchar(50) NOT NULL
+);
+
+CREATE TABLE
+    #IdMap
+(
+    OldId integer NOT NULL,
+    NewId integer NOT NULL
+);
+
+INSERT
+    #Staging
+(
+    OldId,
+    Name
+)
+VALUES
+    (101, N'first'),
+    (102, N'second');
+```
+
+Then the `MERGE`:
 
 ```sql
 MERGE
@@ -52,7 +88,7 @@ INTO #IdMap
 );
 ```
 
-The `ON 1 = 0` guarantees nothing matches, so every source row goes down the insert branch. And `#IdMap` ends up holding old-to-new key pairs you can use for child tables.
+The `ON 1 = 0` guarantees nothing matches, so every source row goes down the insert branch. And `#IdMap` ends up holding old-to-new key pairs you can use for child tables. A `MERGE` that upserts in production takes `WITH (HOLDLOCK)` on the target, per [the upsert card](upserts-break-under-concurrency.md). This insert-only `MERGE` with `ON 1 = 0` doesn't need it.
 
 The duplicate-row protection, adapted from the course. One target row, four source rows that all match it:
 

@@ -22,7 +22,7 @@ A contact table turns "who owns this phone number or email?" from an `OR` across
 
 ## When it backfires
 
-We looked. There isn't one.
+The split tables get pivoted back into the wide row on a hot path, once per customer, because the app still wants it that way. Or the value column turns heterogeneous, dates and numbers and text in one `nvarchar`, and every reader casts on the way out. The tell in a diff is a join back to the contact table on every read, with `CASE` or `TRY_CONVERT` wrapped around the value.
 
 ## Deeper dive
 

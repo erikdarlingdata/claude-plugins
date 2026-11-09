@@ -45,3 +45,8 @@ FROM sys.dm_os_sys_info AS osi;
 ```
 
 That catches instance restarts only. A database restore, detach, or `AUTO_CLOSE` resets its counts too, so if any of those happened more recently, count from then. The 14- and 7-day thresholds are the guardrails `sp_IndexCleanup` enforces: it warns under 14 days and forces dedupe-only mode under 7.
+
+## Reading
+
+- [sys.dm_db_index_usage_stats](https://learn.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-objects/sys-dm-db-index-usage-stats-transact-sql)
+- [AUTO_CLOSE](https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-database-transact-sql-set-options)

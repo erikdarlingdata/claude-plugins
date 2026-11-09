@@ -18,7 +18,7 @@ Immediate on write-heavy tables: one fewer index to maintain on every modificati
 
 ## When it backfires
 
-If this backfires, you did something else too.
+The dropped index had a name something depended on. A query that hints it by name fails with error 308, and a Query Store plan that was forced with it stops forcing, with `NO_INDEX` in `last_force_failure_reason_desc`. Or the audit folded a `UNIQUE` or filtered index into a plain one, and the guarantee or the filter went with it.
 
 ## Deeper dive
 
@@ -173,7 +173,7 @@ EXECUTE dbo.sp_IndexCleanup
 
 Its summary put the cleanup at one removable index out of four, and 0.10 GB down to 0.08 GB before compression.
 
-Here's the merge by hand, without the compression, so the numbers below measure only the merge:
+Here's the merge by hand. The numbers below were measured without the compression option, so they show only the merge:
 
 ```sql
 CREATE INDEX
@@ -183,7 +183,7 @@ ON dbo.Orders
 INCLUDE
     (amount)
 WITH
-    (DROP_EXISTING = ON);
+    (DROP_EXISTING = ON, DATA_COMPRESSION = PAGE);
 
 DROP INDEX
     customer_id_amount

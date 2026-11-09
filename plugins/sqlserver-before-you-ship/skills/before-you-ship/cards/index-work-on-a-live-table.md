@@ -20,7 +20,7 @@ Dropping first and asking questions later. [Disable, then drop](disable-then-dro
 
 ## When it backfires
 
-Two words: maintenance window.
+An online build or rebuild in a deploy script, with no `WAIT_AT_LOW_PRIORITY`, on a table where transactions stay open. The build waits for its table lock, `LCK_M_S` at the start and `LCK_M_SCH_M` at the finish of a rebuild, and every query that arrives after it queues behind it for as long as the oldest open transaction lasts. The dive shows a four-second wait on a row nobody had locked, and the option that keeps that queue from forming.
 
 ## Deeper dive
 
@@ -142,3 +142,9 @@ Same test: window 3 finished in a few milliseconds, and the build started as soo
 It covers the finishing lock too. With `WAIT_AT_LOW_PRIORITY` on the rebuild in the test above, the read went straight through. The rebuild waited for its schema modification lock at low priority.
 
 `CREATE INDEX` accepts `WAIT_AT_LOW_PRIORITY` on **SQL Server 2022** and later. `ALTER INDEX ... REBUILD` got it in **2014**.
+
+## Reading
+
+- [WAIT_AT_LOW_PRIORITY](https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-index-transact-sql)
+- [SORT_IN_TEMPDB](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-index-transact-sql)
+- [RCSI](https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-transaction-locking-and-row-versioning-guide)
