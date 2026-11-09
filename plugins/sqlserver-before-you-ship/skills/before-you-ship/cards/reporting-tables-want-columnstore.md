@@ -14,7 +14,7 @@ Loading in big batches. An insert of 102,400 rows or more gets compressed straig
 
 ## What it risks
 
-Single-row work. Finding one sale by id read 3 pages from the rowstore table and 1,449 from the columnstore copy, because there's no B-tree to seek into. Updates are a delete plus an insert, and deleted rows stay in their compressed segments, marked in a bitmap, until index maintenance clears them.
+Single-row work. Finding one sale by id read 3 pages from the rowstore table and 1,449 from the columnstore copy, because there's no B-tree to seek into. Since **SQL Server 2016**, a nonclustered rowstore index on a clustered columnstore table covers single-row lookups, at the write cost on [the write tax card](the-write-tax.md). Updates are a delete plus an insert, and deleted rows stay in their compressed segments, marked in a bitmap, until index maintenance clears them.
 
 ## How fast it works
 

@@ -14,7 +14,7 @@ An index built for the claim, not for selectivity (how few rows a value matches)
 
 ## What it risks
 
-Two traps. `READPAST` only works under the read committed and repeatable read isolation levels. Under `SERIALIZABLE` or `SNAPSHOT`, the claim fails with Msg 650, and serializable is what .NET's `TransactionScope` uses unless you tell it otherwise. Put `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` inside the procedure that claims.
+Two traps. `READPAST` works under the read committed and repeatable read isolation levels. Under `SERIALIZABLE` or `READ UNCOMMITTED`, the claim fails with Msg 650, and serializable is what .NET's `TransactionScope` uses unless you tell it otherwise. Under `SNAPSHOT` it works only because the claim also takes `UPDLOCK`. Put `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` inside the procedure that claims.
 
 And a job can get queued twice. A unique index on whatever identifies the job stops that, and the course's queue uses [IGNORE_DUP_KEY](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-index-transact-sql) so SQL Server drops duplicates quietly. If finished rows stay in the table, SQL Server quietly drops a real re-run of the same job too. So either delete rows when they finish, or make the unique key cover something that changes per run, like a scheduled date.
 

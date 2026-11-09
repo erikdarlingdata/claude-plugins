@@ -15,14 +15,16 @@ This is the agent version of the chart at https://erikdarling.com/before-you-shi
    - an index: a new one, or the ones already there?
 2. Go through the questions for that path in the map below. Skip the ones that don't fit the code in front of you.
 3. For each question that fits, read its card before saying anything about it. The title alone isn't enough.
-4. Report what applies: the card's action, and the trade-offs from its four sections. The numbers on the cards are what the tests showed, not what the user's server will do.
-5. If nothing here covers the problem, say so. Don't stretch a card to fit.
+4. If a card needs a plan, Query Store numbers, index usage stats or a production-sized test, ask the author for exactly that and mark the finding unverified. Do not infer it from the diff.
+5. Report what applies: the card's action, and the trade-offs from its four sections. The numbers on the cards are what the tests showed, not what the user's server will do.
+6. If nothing here covers the problem, say so. Don't stretch a card to fit.
 
 ## About the cards
 
-- The demos build their own tables. Run them only in a scratch database. Cards that need [StackOverflow2013](https://go.erikdarling.com/Stack2013) say so.
+- The demos build their own tables. Run one card's demo at a time in a scratch database: cards define `dbo.Orders`, `dbo.Posts` and `dbo.Tasks` differently, and some borrow a table from another card and say so. Cards that need [StackOverflow2013](https://go.erikdarling.com/Stack2013) say so.
 - Tested on SQL Server 2025 CU10 at compatibility level 170, unless a card says otherwise. Check the user's version and edition before passing on advice that depends on them.
 - Timings are from a two-core VM. Compare them to each other, not to the user's server.
+- "The course" in the cards is Erik's SQL Server training, the video courses at https://training.erikdarling.com/catalog.
 
 ## First: NOLOCK
 

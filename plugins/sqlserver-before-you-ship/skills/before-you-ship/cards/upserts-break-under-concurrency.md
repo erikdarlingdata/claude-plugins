@@ -104,3 +104,15 @@ Optimized locking on **SQL Server 2025** doesn't change the fix. With it on, the
 It makes one broken pattern worse. With RCSI on as well, lock after qualification lets an unhinted `UPDATE` judge rows by their last committed version. So it finds nothing to update while another session's insert is still uncommitted. An `UPDATE`-then-`INSERT` with no hints that almost never failed otherwise threw 195 to 1,829 primary key violations per four-second test.
 
 Sources, all by Michael J. Swart: [Mythbusting: Concurrent Update/Insert Solutions](https://michaeljswart.com/2011/09/mythbusting-concurrent-updateinsert-solutions/) (2011), [SQL Server UPSERT Patterns and Antipatterns](https://michaeljswart.com/2017/07/sql-server-upsert-patterns-and-antipatterns/) (2017), [UPSERT Requires a Unique Index](https://michaeljswart.com/2022/03/upsert-requires-a-unique-index/) (2022).
+
+## Reading
+
+- [Mythbusting: Concurrent Update/Insert Solutions](https://michaeljswart.com/2011/09/mythbusting-concurrent-updateinsert-solutions/) (Michael J. Swart)
+- [SQL Server UPSERT Patterns and Antipatterns](https://michaeljswart.com/2017/07/sql-server-upsert-patterns-and-antipatterns/) (Michael J. Swart)
+- [UPSERT Requires a Unique Index](https://michaeljswart.com/2022/03/upsert-requires-a-unique-index/) (Michael J. Swart)
+- [MERGE](https://learn.microsoft.com/en-us/sql/t-sql/statements/merge-transact-sql)
+- [IF EXISTS](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/exists-transact-sql)
+- [UPDLOCK](https://learn.microsoft.com/en-us/sql/t-sql/queries/hints-transact-sql-table)
+- [TOP](https://learn.microsoft.com/en-us/sql/t-sql/queries/top-transact-sql)
+- [@@ROWCOUNT](https://learn.microsoft.com/en-us/sql/t-sql/functions/rowcount-transact-sql)
+- [RCSI](https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-transaction-locking-and-row-versioning-guide)

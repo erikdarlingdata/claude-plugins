@@ -10,7 +10,7 @@ On **Enterprise** and **Enterprise Developer editions**, the optimizer (which pi
 
 ## What it costs
 
-Slower writes, and a list of rules. Inserting 100,000 posts took 1.3 to 2.6 seconds without the view and 3.9 to 4.8 seconds with it. The view needs [SCHEMABINDING](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-function-transact-sql), two-part names (schema.table), [COUNT_BIG](https://learn.microsoft.com/en-us/sql/t-sql/functions/count-big-transact-sql)`(*)` when it groups, and the same `SET` options (connection settings) as [filtered indexes](filtered-indexes-need-to-see-the-filter.md). It can't use outer joins, `DISTINCT`, `MIN`, `MAX`, or `AVG`. `SUM` over a column that allows `NULL`s fails too, when you create the index, until you wrap it in [ISNULL](https://learn.microsoft.com/en-us/sql/t-sql/functions/isnull-transact-sql).
+Slower writes, and a list of rules. Inserting 100,000 posts took 1.3 to 2.6 seconds without the view and 3.9 to 4.8 seconds with it. The view needs [SCHEMABINDING](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-view-transact-sql), two-part names (schema.table), [COUNT_BIG](https://learn.microsoft.com/en-us/sql/t-sql/functions/count-big-transact-sql)`(*)` when it groups, and the same `SET` options (connection settings) as [filtered indexes](filtered-indexes-need-to-see-the-filter.md). It can't use outer joins, `DISTINCT`, `MIN`, `MAX`, or `AVG`. `SUM` over a column that allows `NULL`s fails too, when you create the index, until you wrap it in [ISNULL](https://learn.microsoft.com/en-us/sql/t-sql/functions/isnull-transact-sql).
 
 ## What it risks
 

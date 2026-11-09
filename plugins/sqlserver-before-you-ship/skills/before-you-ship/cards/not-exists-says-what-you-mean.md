@@ -10,7 +10,7 @@ The opposite question works the same way. `EXISTS` returns each user once, where
 
 ## What it costs
 
-Nothing. `NOT EXISTS` is about as long as the `LEFT JOIN`, and it returns the same rows.
+Nothing. `NOT EXISTS` is about as long as the `LEFT JOIN`, and it returns the same rows, as long as the column the `LEFT JOIN` tests with `IS NULL` can't be `NULL` on its own, the way `p.id` can't here.
 
 ## What it risks
 

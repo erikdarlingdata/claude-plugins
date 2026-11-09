@@ -12,7 +12,7 @@ Keeping the filter literal in the queries meant to use the index, and putting th
 
 ## What it risks
 
-Sessions with the wrong `SET` options (connection settings). Inserts, updates, and deletes on a table with a filtered index fail unless the session sets [QUOTED_IDENTIFIER](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-quoted-identifier-transact-sql), [ANSI_NULLS](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-ansi-nulls-transact-sql), and a few others the standard way. In a test, an `UPDATE` from a session with `QUOTED_IDENTIFIER OFF`, the default for sqlcmd without -I, failed with Msg 1934. Before you add a filtered index, check what your jobs and older tools connect with.
+Sessions with the wrong `SET` options (connection settings). Any insert, update or delete whose plan has to maintain the filtered index fails with error 1934 unless the session sets [QUOTED_IDENTIFIER](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-quoted-identifier-transact-sql), [ANSI_NULLS](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-ansi-nulls-transact-sql), and a few others the standard way. An update to a column outside the index and its filter is fine. In a test, an `UPDATE` from a session with `QUOTED_IDENTIFIER OFF`, the default for sqlcmd without -I, failed with Msg 1934. Before you add a filtered index, check what your jobs and older tools connect with.
 
 ## How fast it works
 

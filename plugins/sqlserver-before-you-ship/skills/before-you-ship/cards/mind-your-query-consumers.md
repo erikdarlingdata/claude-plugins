@@ -18,7 +18,7 @@ Slow on purpose: auditing callers can take days in a big codebase. Changes that 
 
 ## When it backfires
 
-This space reserved for your excuses.
+A changed `SELECT` list. Renaming a column, changing its type or nullability, or moving it breaks every `INSERT ... EXEC` that fills a table from the procedure, and every app reader that maps columns by name or position. Before it ships, grep the repo for the object's name in `INSERT ... EXEC`, in `sp_executesql` strings, and in application code, because the dependency views show none of them.
 
 ## Deeper dive
 

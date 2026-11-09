@@ -4,6 +4,8 @@ Where it sits in the chart: A table > An existing table > "Adding a column" (Met
 
 Adding a column is either a metadata-only change, done in milliseconds regardless of table size, or a size-of-data operation. That one rewrites every row under a schema modification lock (a lock that blocks every other query on the table). Which one you get depends on version, edition, nullability, defaults, and details that shift between releases: too many variations to memorize, so don't. Test the exact `ALTER` on a production-sized copy, every time.
 
+A few rules do hold still. Adding a nullable column with no default is metadata-only. Adding a `NOT NULL` column with a default is metadata-only when the default is a runtime constant, a literal or `SYSDATETIME()`, and the [ALTER TABLE](https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-table-transact-sql) docs promise that for **Enterprise edition** since **SQL Server 2012** and nowhere else. `NEWID()` and `NEWSEQUENTIALID()` don't count, because they produce a different value per row, so that `ALTER` rewrites the table under a schema modification lock. Adding an `IDENTITY` column or a `PERSISTED` computed column rewrites the table too.
+
 And the `ALTER` isn't the only question. Look at how wide the table already is before making it wider, and think about how queries will use the column. Does it fit into an existing index, or are you signing up for new ones to cover the query patterns around it? That last question belongs to the index door, starting with [Widen before you add](widen-before-you-add.md).
 
 ## What it costs
@@ -51,3 +53,13 @@ Two things to know before putting this in a deploy script:
 - Run the script so a failure stops it (sqlcmd -b, or [TRY/CATCH](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/try-catch-transact-sql) with [THROW](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/throw-transact-sql)). Otherwise the backfill and index builds that come next run against a table that never changed.
 
 [WAIT_AT_LOW_PRIORITY](https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-index-transact-sql) is the built-in version of this, and it covers more with each release. Online `ALTER INDEX REBUILD` and partition [SWITCH](https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-table-transact-sql) got it in **SQL Server 2014**, and online `CREATE INDEX` and `DBCC` [SHRINKFILE](https://learn.microsoft.com/en-us/sql/t-sql/database-console-commands/dbcc-shrinkfile-transact-sql) got it in **2022**. It doesn't cover `ALTER TABLE ... ADD` or `ALTER COLUMN`, which is why the timeout is still the move for column changes.
+
+## Reading
+
+- [ALTER TABLE](https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-table-transact-sql)
+- [LOCK_TIMEOUT](https://learn.microsoft.com/en-us/sql/t-sql/statements/set-lock-timeout-transact-sql)
+- [RCSI](https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-transaction-locking-and-row-versioning-guide)
+- [TRY/CATCH](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/try-catch-transact-sql)
+- [THROW](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/throw-transact-sql)
+- [WAIT_AT_LOW_PRIORITY](https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-index-transact-sql)
+- [SHRINKFILE](https://learn.microsoft.com/en-us/sql/t-sql/database-console-commands/dbcc-shrinkfile-transact-sql)
