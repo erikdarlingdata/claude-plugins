@@ -98,7 +98,7 @@ WITH
     (DROP_EXISTING = ON, DATA_COMPRESSION = PAGE);
 ```
 
-Same query: one seek, 12 reads, and the request is gone. [DROP_EXISTING](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-index-transact-sql) swaps the definition in one operation, so there's no window where queries run without the index.
+Same query: one seek, 8 reads (12 without the compression), and the request is gone. [DROP_EXISTING](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-index-transact-sql) swaps the definition in one operation, so there's no window where queries run without the index.
 
 Offline, though, it holds a schema modification lock for the whole build, so even reads wait. Adding a brand-new index offline only blocks writes.
 
