@@ -2,7 +2,7 @@
 
 Where it sits in the chart: A query > No NOLOCK > It reads data > A new query > "Reaching for a CTE or a temp table?" (When each one helps)
 
-A [CTE](https://learn.microsoft.com/en-us/sql/t-sql/queries/with-common-table-expression-transact-sql) (common table expression) doesn't store anything, in memory or anywhere else. It's a query macro. A [TOP](https://learn.microsoft.com/en-us/sql/t-sql/queries/top-transact-sql) in it stops SQL Server pushing predicates into it, but doesn't make it run once. SQL Server folds its query into the rest of the plan, so a complex query or a bad estimate inside it can drag down everything after it. Join to it five times and that query runs five times. A `#temp` table gives the optimizer smaller bites: a stored result, with real statistics, to plan the rest of the work from.
+A [CTE](https://learn.microsoft.com/en-us/sql/t-sql/queries/with-common-table-expression-transact-sql) (common table expression) doesn't store anything, in memory or anywhere else. It's a query macro, and a [TOP](https://learn.microsoft.com/en-us/sql/t-sql/queries/top-transact-sql) in it stops SQL Server pushing predicates into it without making it run once. SQL Server folds its query into the rest of the plan, so a complex query or a bad estimate inside it can drag down everything after it. Join to it five times and that query runs five times. A `#temp` table gives the optimizer smaller bites: a stored result, with real statistics, to plan the rest of the work from.
 
 And CTEs don't make queries more readable. Formatting does.
 
