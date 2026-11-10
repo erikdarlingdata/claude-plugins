@@ -24,7 +24,7 @@ The next load. Indexes slow heap loads down too: one nonclustered index made the
 
 Emptying a staging heap with `DELETE` instead of [TRUNCATE](https://learn.microsoft.com/en-us/sql/t-sql/statements/truncate-table-transact-sql) `TABLE`. Without a `TABLOCK` hint, a delete leaves emptied pages allocated. After deleting every row 4,000 at a time, the heap still had all 8,660 of its pages. A scan of the empty table read every one.
 
-One `DELETE` of every row, which did escalate to a table lock, still left 6,249. `DELETE ... WITH (TABLOCK)` gives the pages back, except under [RCSI](https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-transaction-locking-and-row-versioning-guide) (Read Committed Snapshot Isolation), snapshot isolation, or Accelerated Database Recovery (which optimized locking needs), where even that kept every page.
+One `DELETE` of every row, which did escalate to a table lock, still left 6,249. `DELETE ... WITH (TABLOCK)` gives the pages back, except under [RCSI](https://learn.microsoft.com/en-us/sql/relational-databases/sql-server-transaction-locking-and-row-versioning-guide) (Read Committed Snapshot Isolation), snapshot isolation, or Accelerated Database Recovery (which optimized locking needs), where even that kept every page. So does an `AFTER DELETE` trigger on a heap with a LOB column, or with columns wide enough that a row could overflow.
 
 ## Deeper dive
 
@@ -283,3 +283,4 @@ The heap started out bigger there too, 12,123 pages instead of 8,660. That's bec
 
 - [Learn T-SQL With Erik: Heap Table Problems with Updates and Deletes](https://erikdarling.com/learn-t-sql-with-erik-heap-table-problems-with-updates-and-deletes/)
 - [A Little About Forwarded Fetches In SQL Server](https://erikdarling.com/a-little-about-forwarded-fetches-in-sql-server/)
+- [Deletes that Split Pages and Forwarded Ghosts](https://www.sql.kiwi/2012/08/deletes-that-split-pages-and-forwarded-ghosts/) (Paul White)
