@@ -185,6 +185,11 @@ class Node:
         return workers or self.threads
 
     @property
+    def never_ran(self):
+        """Runtime counters present, but no thread ever opened it and it emitted nothing."""
+        return self.has_actual and self.thread_executions == 0 and self.actual_rows == 0
+
+    @property
     def mode(self):
         return self.actual_mode or self.est_mode
 
@@ -694,7 +699,9 @@ def render_tree(node, out, has_actual, depth=0, budget=None):
     indent = "  " + "   " * depth
     objs = node_objects(node)
     obj = f"  {objs[0]}" if objs else ""
-    if has_actual and node.has_actual:
+    if has_actual and node.has_actual and node.never_ran:
+        detail = f"est {fmt_rows(node.est_rows)}/exec, never executed"
+    elif has_actual and node.has_actual:
         execs = max(1.0, node.actual_executions)
         detail = (
             f"est {fmt_rows(node.est_rows)}/exec vs "
@@ -967,7 +974,10 @@ def describe_statement(stmt_el, out, top_n, full_sql=False):
         out.append("-- CARDINALITY SKEW (per execution) -------------------------")
         skewed = []
         for n in nodes:
-            if not n.has_actual or n.is_exchange:
+            # An operator that never ran returned nothing because it never ran: the
+            # unused input of an Adaptive Join, a branch behind a startup filter.
+            # Its zero is no evidence about the estimate.
+            if not n.has_actual or n.is_exchange or n.never_ran:
                 continue
             execs = max(1.0, n.actual_executions)
             actual_per_exec = n.actual_rows / execs

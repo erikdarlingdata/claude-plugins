@@ -334,6 +334,23 @@ class ParallelExecutions(unittest.TestCase):
         out = _run_plan(_plan(10, 10, join))
         self.assertIn("est 1/exec vs actual 1/exec", _tree_line(out, 3))
         self.assertIn("est 400/exec vs actual 400/exec", _tree_line(out, 1))
+        # The hash probe never ran: its zero rows say nothing about its estimate.
+        self.assertIn("never executed", _tree_line(out, 2))
+        self.assertNotIn("node   2", out.split("CARDINALITY SKEW")[1].split("\n--")[0])
+
+    def test_real_adaptive_join_that_ran_as_nested_loops(self):
+        # SQL Server 2025, DOP 8: Badges joined to Users, adaptive threshold
+        # 11,904 rows, 3,264 arrived, so it ran as a nested loop. The Users seek
+        # ran 3,264 times across eight threads, one row each. The Users scan (the
+        # hash probe) never ran, and used to be reported 24,658x overestimated.
+        # The Badges scan and the join returned 3,264 rows in one shared
+        # execution, and used to read 408/exec, 33.4x overestimated.
+        out = digest(str(REPO / "tests/plans/adaptive-join-ran-as-nested-loops.sqlplan"))
+        skew = out.split("CARDINALITY SKEW")[1].split("\n--")[0]
+        self.assertIn("(no operator off by 10x or more)", skew)
+        self.assertIn("est 1/exec vs actual 1/exec", _tree_line(out, 10))
+        self.assertIn("est 13,666/exec vs actual 3,264/exec", _tree_line(out, 5))
+        self.assertIn("never executed", _tree_line(out, 7))
 
     def test_row_goal_on_a_parallel_scan_counts_threads_not_executions(self):
         # One execution split over four threads; three of them stopped early.
