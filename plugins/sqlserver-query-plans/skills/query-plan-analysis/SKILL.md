@@ -148,6 +148,12 @@ times estimated perfectly. Announcing a four-million-times underestimate there
 is the most common way to be loudly wrong about a plan. The digest does this
 division for you.
 
+In a parallel plan `ActualExecutions` is per thread. Outside a nested loop's
+inner side the threads share one execution, so a DOP 8 scan that shows 1 on each
+of eight threads ran once; dividing its rows by 8 invents an overestimate. The
+digest counts executions of the operator as a whole; see
+`references/cardinality.md`.
+
 Large skew in either direction is worth investigating; see
 `references/cardinality.md`. When an estimate lands on a suspiciously round
 fraction of table cardinality, the optimizer had no useful statistics and guessed.

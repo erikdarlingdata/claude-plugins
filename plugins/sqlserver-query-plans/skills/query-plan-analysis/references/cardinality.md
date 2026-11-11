@@ -10,14 +10,29 @@ Showplan reports these on different bases:
 - `EstimateRows` — rows the optimizer expects **per execution** of the operator.
 - `ActualRows` — rows actually emitted, **summed over every execution and every
   thread**.
-- `ActualExecutions` — how many times the operator ran, summed over threads.
+- `ActualExecutions` — recorded **per thread**. What it adds up to depends on
+  where the operator sits (below).
 
 So the only valid comparison is:
 
 ```
-actual per execution = ActualRows / ActualExecutions
+actual per execution = ActualRows / executions
 skew = (actual per execution) / EstimateRows
 ```
+
+where `executions` is how many times the operator ran **as a whole**:
+
+- **Serial**: the single thread's `ActualExecutions`.
+- **Parallel, on the inner side of a nested loop** (no exchange between the
+  operator and that join): each thread runs complete executions for the outer
+  rows it holds, so **sum** `ActualExecutions` across threads.
+- **Parallel, anywhere else**: the threads **share** each execution. A DOP 8 scan
+  shows `ActualExecutions="1"` on eight threads and ran once, with its pages split
+  between them; `EstimateRows` is for that one run. Use the **largest**
+  per-thread value (1, or N when the whole branch is rebound N times under a
+  serial nested loop). Summing here divides the actual rows by DOP and invents
+  an overestimate: a scan that returned 5,829 rows against an estimate of 27,572
+  is a 4.7x overestimate, not "729 per execution, 37.8x".
 
 An index seek on the inner side of a nested loop that shows `EstimateRows="1"`
 and `ActualRows="4000000"` over `ActualExecutions="4000000"` estimated

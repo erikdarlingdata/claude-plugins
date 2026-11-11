@@ -31,7 +31,7 @@ Every `RelOp` in an actual plan carries `<RunTimeInformation>` with one
 |---|---|---|
 | `ActualRows` | rows emitted | **sum** |
 | `ActualRowsRead` | rows examined before the predicate | **sum** |
-| `ActualExecutions` | times this operator started | **sum** |
+| `ActualExecutions` | times this thread started the operator | **sum** on a nested loop's inner side, **max** elsewhere in a parallel branch (threads share each execution; see `cardinality.md`) |
 | `ActualCPUms` | CPU consumed | **sum** |
 | `ActualElapsedms` | wall clock | **max** |
 | `ActualLogicalReads` | pages read from buffer pool | **sum** |

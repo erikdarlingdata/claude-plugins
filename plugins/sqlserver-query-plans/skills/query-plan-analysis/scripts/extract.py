@@ -72,12 +72,33 @@ def num(el, name, default=0.0):
         return default
 
 
+def rebinds_child(physical, index):
+    """
+    Does this input of this operator get re-executed once per outer row?
+
+    The inner input of Nested Loops, and the third input of an Adaptive Join
+    (build, hash probe, nested-loops inner), are opened again for every outer
+    row. Within a parallel branch each thread drives its own copy of the inner
+    side for the outer rows it holds.
+    """
+    if physical == "Nested Loops":
+        return index >= 1
+    if physical == "Adaptive Join":
+        return index >= 2
+    return False
+
+
 class Node:
     """One RelOp, with per-thread runtime stats folded to node level."""
 
-    def __init__(self, el, parent=None):
+    def __init__(self, el, parent=None, thread_local=False):
         self.el = el
         self.parent = parent
+        # True when each thread runs whole executions of this operator by itself:
+        # on the inner side of a nested loop, with no exchange between here and
+        # that join. False when threads share an execution, as a parallel scan
+        # splits its pages between them. See logical_executions().
+        self.thread_local = thread_local
         self.node_id = el.get("NodeId", "?")
         self.physical = el.get("PhysicalOp", "")
         self.logical = el.get("LogicalOp", "")
@@ -97,7 +118,11 @@ class Node:
         self.has_actual = False
         self.actual_rows = 0.0
         self.actual_rows_read = 0.0
+        # Executions of the operator as a whole, which is what EstimateRows is
+        # "per". Not the per-thread ActualExecutions summed: see logical_executions().
         self.actual_executions = 0.0
+        # ActualExecutions summed over threads: how many times any thread opened it.
+        self.thread_executions = 0.0
         # Executions that read to the end of their input. Under a row goal, the
         # rest were stopped early by the operator above. None if not recorded.
         self.end_of_scans = None
@@ -132,7 +157,8 @@ class Node:
                 # took the branch's entire duration.
                 self.actual_rows = sum(t["rows"] for t in self.threads)
                 self.actual_rows_read = sum(t["rows_read"] for t in self.threads)
-                self.actual_executions = sum(t["executions"] for t in self.threads)
+                self.thread_executions = sum(t["executions"] for t in self.threads)
+                self.actual_executions = logical_executions(self.threads, thread_local)
                 eos = [t["end_of_scans"] for t in self.threads if t["end_of_scans"] is not None]
                 if eos:
                     self.end_of_scans = sum(eos)
@@ -140,7 +166,11 @@ class Node:
                 self.logical_reads = sum(t["reads"] for t in self.threads)
                 self.elapsed_ms = max(t["elapsed"] for t in self.work_threads)
 
-        self.children = [Node(c, self) for c in child_relops(el)]
+        # An exchange starts a new set of threads, so thread-locality stops at one.
+        self.children = [
+            Node(c, self, rebinds_child(self.physical, i) or (thread_local and not self.is_exchange))
+            for i, c in enumerate(child_relops(el))
+        ]
         self.warnings = parse_warnings(el)
 
     @property
@@ -167,6 +197,33 @@ class Node:
         if self.logical and self.logical != self.physical:
             return f"{self.physical} ({self.logical})"
         return self.physical
+
+
+def logical_executions(threads, thread_local):
+    """
+    How many times the operator ran as a whole -- the unit EstimateRows is per.
+
+    ActualExecutions is recorded per thread, and what one thread's execution
+    means depends on where the operator sits:
+
+      - Serial: one thread, so per-thread and logical are the same number.
+      - Parallel, inner side of a nested loop (thread_local): each thread runs
+        complete executions for the outer rows it was handed. The estimate is
+        per execution (EstimateRebinds + EstimateRewinds + 1 of them in total),
+        so the executions add up across threads. A seek run 587 times on one
+        thread and 1,017 on another ran 1,604 times.
+      - Parallel, anywhere else: the threads SHARE each execution. A DOP 8 scan
+        reports ActualExecutions=1 on each of 8 threads, but it ran once, with
+        its pages split between them, and EstimateRows is for that one run.
+        Summing made it 8 executions and divided the actual rows by 8, inventing
+        an 8x overestimate. Every thread opens the operator once per execution
+        (N times when the whole branch is rebound N times beneath a serial
+        nested loop), so the most any one thread recorded is the count.
+    """
+    if not threads:
+        return 0.0
+    executions = [t["executions"] for t in threads]
+    return sum(executions) if thread_local else max(executions)
 
 
 def child_relops(el):
@@ -606,15 +663,21 @@ def row_goal_runtime(n):
     optimizer PLANNED to stop early. ActualEndOfScans counts the executions that
     read to the end of their input anyway, so the rest are the ones that stopped.
     """
-    if n.end_of_scans is None or n.actual_executions <= 0:
+    # ActualEndOfScans is per thread, like ActualExecutions, so compare it with
+    # the per-thread total, and say "threads" when threads shared one execution.
+    opened = n.thread_executions
+    if n.end_of_scans is None or opened <= 0:
         return "may have stopped early"
-    if n.end_of_scans >= n.actual_executions:
+    if n.end_of_scans >= opened:
         return "did not stop it, every execution read to the end"
-    stopped = n.actual_executions - n.end_of_scans
-    if n.actual_executions == 1:
+    stopped = opened - n.end_of_scans
+    if opened == 1:
         return "stopped early"
+    if opened != n.actual_executions:
+        unit = "threads" if n.actual_executions == 1 else "per-thread executions"
+        return f"stopped early on {fmt_rows(stopped)} of {fmt_rows(opened)} {unit}"
     return (
-        f"{fmt_rows(stopped)} of {fmt_rows(n.actual_executions)} "
+        f"{fmt_rows(stopped)} of {fmt_rows(opened)} "
         f"executions stopped early"
     )
 
@@ -1178,7 +1241,14 @@ def describe_node(node, out):
         return
     out.append("")
     out.append("  ACTUALS")
-    out.append(f"    executions         : {fmt_rows(node.actual_executions)}")
+    shared = ""
+    if node.thread_executions != node.actual_executions:
+        # Parallel, not on a nested loop's inner side: threads split each execution.
+        shared = (
+            f"  (threads shared each one: {fmt_rows(node.thread_executions)} "
+            f"per-thread starts summed)"
+        )
+    out.append(f"    executions         : {fmt_rows(node.actual_executions)}{shared}")
     out.append(f"    rows emitted       : {fmt_rows(node.actual_rows)} (total, all executions)")
     if node.actual_executions > 0:
         out.append(f"    rows per execution : {fmt_rows(node.actual_rows / node.actual_executions)}")

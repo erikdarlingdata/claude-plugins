@@ -200,6 +200,155 @@ class SelfCpu(unittest.TestCase):
         self.assertEqual(_node_self_cpu(_plan(1000, 1000, agg), 0), 100)
 
 
+def _threads(*threads, mode="Row"):
+    """RunTimeInformation for (thread, rows, executions[, end_of_scans[, elapsed_ms]]) tuples."""
+    rows = ""
+    for t in threads:
+        thread, r, execs = t[:3]
+        eos = t[3] if len(t) > 3 else execs
+        ms = t[4] if len(t) > 4 else 0
+        rows += (
+            f'<RunTimeCountersPerThread Thread="{thread}" ActualRows="{r}" '
+            f'ActualExecutions="{execs}" ActualEndOfScans="{eos}" ActualExecutionMode="{mode}" '
+            f'ActualElapsedms="{ms}" ActualCPUms="{ms}"/>'
+        )
+    return f"<RunTimeInformation>{rows}</RunTimeInformation>"
+
+
+def _op(node_id, physical, logical, est, counters, inner="", parallel=True, extra=""):
+    return (
+        f'<RelOp NodeId="{node_id}" PhysicalOp="{physical}" LogicalOp="{logical}" '
+        f'EstimateRows="{est}" EstimatedTotalSubtreeCost="1" EstimatedExecutionMode="Row" '
+        f'Parallel="{"1" if parallel else "0"}"{extra}>{counters}{inner}</RelOp>'
+    )
+
+
+def _run_plan(body, *args):
+    import tempfile
+    p = pathlib.Path(tempfile.mkdtemp()) / "parallel-executions.sqlplan"
+    p.write_text(body, encoding="utf-8")
+    r = subprocess.run([sys.executable, str(EXTRACT), str(p), *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise AssertionError(f"extract.py failed:\n{r.stderr}")
+    return r.stdout
+
+
+def _tree_line(out, node_id):
+    return next(l for l in out.splitlines() if l.strip().startswith(f"[{node_id}] "))
+
+
+def _executions(out):
+    return next(l for l in out.splitlines() if l.strip().startswith("executions"))
+
+
+# Per-thread figures from a real DOP 8 plan (chatgpt-rewrite-slow): a parallel
+# scan of Users feeding a nested loop whose inner side is a TOP (1) seek.
+_SCAN_ROWS = [587, 1017, 561, 455, 438, 672, 1348, 751]          # sum 5,829
+_SEEK_ROWS = [573, 1001, 546, 439, 429, 659, 1336, 735]          # sum 5,718
+
+
+def _chatgpt_shape():
+    scan = _op(3, "Clustered Index Scan", "Clustered Index Scan", 27572.3,
+               _threads(*[(i + 1, r, 1) for i, r in enumerate(_SCAN_ROWS)], (0, 0, 0)))
+    # The seek runs once per outer row on whichever thread holds that row.
+    seek = _op(8, "Index Seek", "Index Seek", 1,
+               _threads(*[(i + 1, s, r) for i, (r, s) in enumerate(zip(_SCAN_ROWS, _SEEK_ROWS))], (0, 0, 0)),
+               extra=' EstimateRewinds="27571.3"')
+    loops = _op(1, "Nested Loops", "Left Outer Join", 27572.3,
+                _threads(*[(i + 1, r, 1) for i, r in enumerate(_SCAN_ROWS)], (0, 0, 0)),
+                f"<NestedLoops>{scan}{seek}</NestedLoops>")
+    gather = _op(0, "Parallelism", "Gather Streams", 27572.3, _threads((0, 5829, 1)),
+                 f"<Parallelism>{loops}</Parallelism>")
+    return _plan(100, 100, gather)
+
+
+class ParallelExecutions(unittest.TestCase):
+    """
+    ActualExecutions is per thread. Outside a nested loop's inner side, the
+    threads of a parallel branch SHARE one execution: a DOP 8 scan reports
+    ActualExecutions=1 on eight threads and ran once. Summing made it eight
+    executions and divided the actual rows by eight, so chatgpt-rewrite-slow
+    reported its Users scan as "est 27,572/exec vs actual 729/exec over 8
+    exec(s) -> overestimated 37.8x". It returned 5,829 rows in one execution.
+    On the inner side each thread runs whole executions, and those do add up.
+    Built in memory, so these run without the fixture directory.
+    """
+
+    def test_parallel_scan_is_one_execution_not_one_per_thread(self):
+        out = _run_plan(_chatgpt_shape())
+        self.assertIn("actual 5,829/exec", _tree_line(out, 3))
+        self.assertIn("actual 5,829/exec", _tree_line(out, 1))
+        skew = out.split("CARDINALITY SKEW")[1].split("\n--")[0]
+        self.assertNotIn("729/exec", out)
+        self.assertNotIn("Clustered Index Scan", skew)  # 4.7x, under the 10x bar
+        node3 = _run_plan(_chatgpt_shape(), "--node", "3")
+        self.assertIn(": 1  (threads shared each one: 8 per-thread starts summed)", _executions(node3))
+
+    def test_parallel_inner_side_executions_still_sum_across_threads(self):
+        # 5,829 executions spread over eight threads, est 1 row each, 5,718 rows
+        # back: estimated fine. Taking the busiest thread's 1,348 executions
+        # would invent a 4x underestimate.
+        out = _run_plan(_chatgpt_shape())
+        self.assertIn("est 1/exec vs actual 0.981/exec", _tree_line(out, 8))
+        node8 = _run_plan(_chatgpt_shape(), "--node", "8")
+        self.assertEqual(_executions(node8).split(":")[1].strip(), "5,829")
+
+    def test_parallel_branch_rebound_under_a_serial_loop_counts_rebinds_once(self):
+        # A serial nested loop over a Gather Streams re-runs the whole parallel
+        # branch per outer row. Three outer rows: every worker opens the scan
+        # three times, and the scan ran three times, not twelve.
+        scan = _op(3, "Clustered Index Scan", "Clustered Index Scan", 100,
+                   _threads(*[(t, 75, 3) for t in (1, 2, 3, 4)]))
+        gather = _op(2, "Parallelism", "Gather Streams", 100, _threads((0, 300, 3)),
+                     f"<Parallelism>{scan}</Parallelism>", extra=' EstimateRewinds="2"')
+        outer = _op(1, "Constant Scan", "Constant Scan", 3, _threads((0, 3, 1)), parallel=False)
+        loops = _op(0, "Nested Loops", "Inner Join", 300, _threads((0, 300, 1)),
+                    f"<NestedLoops>{outer}{gather}</NestedLoops>", parallel=False)
+        body = _plan(10, 10, loops)
+        self.assertIn("est 100/exec vs actual 100/exec", _tree_line(_run_plan(body), 3))
+        self.assertIn(": 3  (threads shared", _executions(_run_plan(body, "--node", "3")))
+
+    def test_below_an_inner_side_spool_each_thread_runs_its_own_copy(self):
+        # A spool on a parallel inner side is per thread: each of four threads
+        # filled its own from a full scan. Four executions of 1,000 rows, as
+        # estimated, not one execution of 4,000.
+        scan = _op(3, "Index Scan", "Index Scan", 1000, _threads(*[(t, 1000, 1) for t in (1, 2, 3, 4)]))
+        spool = _op(2, "Table Spool", "Lazy Spool", 1000, _threads(*[(t, 5000, 5) for t in (1, 2, 3, 4)]),
+                    f"<Spool>{scan}</Spool>", extra=' EstimateRewinds="19"')
+        outer = _op(1, "Index Scan", "Index Scan", 20, _threads(*[(t, 5, 1) for t in (1, 2, 3, 4)]))
+        loops = _op(0, "Nested Loops", "Inner Join", 20000, _threads(*[(t, 5000, 1) for t in (1, 2, 3, 4)]),
+                    f"<NestedLoops>{outer}{spool}</NestedLoops>")
+        out = _run_plan(_plan(10, 10, loops))
+        self.assertIn("est 1,000/exec vs actual 1,000/exec", _tree_line(out, 3))
+        self.assertIn("est 1,000/exec vs actual 1,000/exec", _tree_line(out, 2))
+        self.assertIn("est 20,000/exec vs actual 20,000/exec", _tree_line(out, 0))
+
+    def test_adaptive_join_third_input_is_an_inner_side(self):
+        # Adaptive Join inputs: build, hash probe, nested-loops inner.
+        build = _op(1, "Index Scan", "Index Scan", 400, _threads(*[(t, 100, 1) for t in (1, 2, 3, 4)]))
+        probe = _op(2, "Index Scan", "Index Scan", 4000, _threads(*[(t, 0, 0) for t in (1, 2, 3, 4)]))
+        seek = _op(3, "Index Seek", "Index Seek", 1, _threads(*[(t, 100, 100) for t in (1, 2, 3, 4)]),
+                   extra=' EstimateRewinds="399"')
+        join = _op(0, "Adaptive Join", "Inner Join", 400, _threads(*[(t, 100, 1) for t in (1, 2, 3, 4)]),
+                   f"<AdaptiveJoin>{build}{probe}{seek}</AdaptiveJoin>")
+        out = _run_plan(_plan(10, 10, join))
+        self.assertIn("est 1/exec vs actual 1/exec", _tree_line(out, 3))
+        self.assertIn("est 400/exec vs actual 400/exec", _tree_line(out, 1))
+
+    def test_row_goal_on_a_parallel_scan_counts_threads_not_executions(self):
+        # One execution split over four threads; three of them stopped early.
+        # "3 of 4 executions stopped early" described executions that never happened.
+        scan = _op(1, "Clustered Index Scan", "Clustered Index Scan", 10,
+                   _threads((1, 3, 1, 0, 50), (2, 3, 1, 0, 50), (3, 3, 1, 0, 50), (4, 1, 1, 1, 50)),
+                   extra=' EstimateRowsWithoutRowGoal="1000000"')
+        gather = _op(0, "Parallelism", "Gather Streams", 10, _threads((0, 10, 1)),
+                     f"<Parallelism>{scan}</Parallelism>")
+        out = _run_plan(_plan(200, 60, gather))
+        line = next(l for l in out.splitlines() if "row goal  :" in l)
+        self.assertIn("stopped early on 3 of 4 threads", line)
+        self.assertNotIn("executions stopped early", line)
+
+
 class Cardinality(unittest.TestCase):
     def test_estimates_are_normalized_per_execution(self):
         # ActualRows is a total; EstimateRows is per execution. Comparing them
@@ -207,6 +356,18 @@ class Cardinality(unittest.TestCase):
         out = digest("eager-index-spool.sqlplan")
         self.assertIn("CARDINALITY SKEW (per execution)", out)
         self.assertIn("/exec", out)
+
+    def test_parallel_scan_is_not_divided_by_its_thread_count(self):
+        # DOP 8 Users scan: est 27,572, actual 5,829 in ONE execution shared by
+        # eight threads. Dividing by the eight per-thread ActualExecutions made it
+        # 729/exec and a false 37.8x overestimate on the scan, the Sort, and the
+        # Nested Loops above it. The inner-side seek must stay at 0.981/exec.
+        out = digest("chatgpt-rewrite-slow.sqlplan")
+        skew = out.split("CARDINALITY SKEW")[1].split("\n--")[0]
+        self.assertNotIn("729/exec", out)
+        self.assertNotIn("37.8x", skew)
+        self.assertIn("est 27,572/exec vs actual 5,829/exec", out)
+        self.assertIn("est 1/exec vs actual 0.981/exec", out)
 
     def test_ce_guess_fingerprint_does_not_name_the_guess(self):
         # The guess fractions differ between cardinality estimator versions.
