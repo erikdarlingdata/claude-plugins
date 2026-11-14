@@ -20,7 +20,7 @@
  *    tool itself never compacts.
  *
  * 2. Idle backstop. When the session settles above
- *    PI_SELF_COMPACT_AUTO_TOKENS (default 400k, 0 turns it off) and stays idle
+ *    PI_SELF_COMPACT_AUTO_TOKENS (default 200k, 0 turns it off) and stays idle
  *    for PI_SELF_COMPACT_IDLE_MIN minutes (default 15), it compacts. This
  *    catches a seat that forgets to call the tool.
  *
@@ -58,7 +58,7 @@ import { Type } from "typebox";
 
 const num = (v: string | undefined, d: number) => (v !== undefined && v !== "" && Number.isFinite(Number(v)) ? Number(v) : d);
 const MIN_TOKENS = num(process.env.PI_SELF_COMPACT_MIN_TOKENS, 150_000);
-const AUTO_TOKENS = num(process.env.PI_SELF_COMPACT_AUTO_TOKENS, 400_000);
+const AUTO_TOKENS = num(process.env.PI_SELF_COMPACT_AUTO_TOKENS, 200_000);
 const IDLE_MS = num(process.env.PI_SELF_COMPACT_IDLE_MIN, 15) * 60_000;
 const DEBUG_DIR = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "cache-debug");
 const OWNER_KEY = Symbol.for("self-compact:seat-owner");
