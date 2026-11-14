@@ -203,7 +203,7 @@ first, then reload.
 
 [`recipes/extensions/self-compact.ts`](recipes/extensions/self-compact.ts) lets
 the agent do this itself. It adds a `self_compact` tool that compacts once the
-session is idle, and it compacts an idle session above 400k tokens. It also
+session is idle, and it compacts an idle session above 200k tokens. It also
 stops the summary's file lists from growing. As a trial, it can write the
 summary from the cache. See the
 [recipe notes](recipes/extensions/README.md#self-compactts).

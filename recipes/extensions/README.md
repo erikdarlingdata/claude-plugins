@@ -240,8 +240,13 @@ every request. Main session only. Events are logged to
    request is sent during it. Add a line to your `AGENTS.md` that tells agents
    to call it when a task ends and the next work is unrelated.
 2. **Idle backstop.** A session that settles above
-   `PI_SELF_COMPACT_AUTO_TOKENS` (default 400k, 0 turns it off) and stays idle
+   `PI_SELF_COMPACT_AUTO_TOKENS` (default 200k, 0 turns it off) and stays idle
    for `PI_SELF_COMPACT_IDLE_MIN` minutes (default 15) is compacted.
+   The default was 400k until 2026-11. We measured 200k for one week on 12
+   long-running sessions. The median context fell from 169k to 140k tokens.
+   The share of requests above 200k fell from 36% to 12%. The cost per request
+   fell from $0.066 to $0.057. To get the old behavior, set the variable to
+   400000.
 3. **File lists.** pi adds `<read-files>` and `<modified-files>` to every
    summary and carries the earlier lists forward, so they only grow. One
    session's lists reached 643 paths, about 17k tokens on every request. The
