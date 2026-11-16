@@ -551,8 +551,10 @@ npm install -g --allow-scripts=agent-browser agent-browser
 This is npm-version and registry-policy specific; `npm install --help` shows
 whether `--allow-scripts` is available.
 
-`pi-agent-browser-native` needs Node 24.21 or newer and Pi 1.0.0 or newer. Any
-stable agent-browser 0.35.0 or later works with it.
+`pi-agent-browser-native` 0.9.32 needs Node 24.22.3 or newer (or 26.13.1 or newer
+on Node 26), Pi 1.5.2 or newer, and agent-browser 0.43.0 or newer. To update the
+CLI, run `agent-browser upgrade`. Since 0.9.18 it has no `agent_browser_code`
+tool. Use `agent_browser` with `batch`, or Pi's `codemode`.
 
 ## 8. Verify the setup
 
