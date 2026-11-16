@@ -20,8 +20,6 @@ Slow on purpose: auditing callers can take days in a big codebase. Changes that 
 
 A changed `SELECT` list. Adding or removing a column breaks every `INSERT ... EXEC` that fills a table from the procedure, because it matches columns by position, and swapping two columns of the same type puts values in the wrong columns without an error. Renaming one breaks every app reader that maps columns by name. Before it ships, search the repo for the object's name, including inside `sp_executesql` strings and application code: the dependency views catch an `INSERT ... EXEC` inside another module, but not those.
 
-## Deeper dive
+## Evidence
 
-Two demos elsewhere in the chart show the added-column problem in action. In [Widen before you add](widen-before-you-add.md), a query asks for one column its index doesn't have. The plan picks up 2,000 key lookups: about 6,100 reads, where the widened index needs 12. Whether SQL Server keeps doing lookups or gives up and scans the table depends on how many rows the parameter brings back.
-
-[Dev lied to you](dev-lied-to-you.md) shows what happens when a plan like that gets cached and reused for values it wasn't built for.
+Demo code and measurements: [evidence/mind-your-query-consumers.md](../evidence/mind-your-query-consumers.md). Open it to quote a number or run the demo.

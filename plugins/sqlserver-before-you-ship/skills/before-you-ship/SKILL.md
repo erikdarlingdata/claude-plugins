@@ -5,22 +5,20 @@ description: Trade-offs to check before shipping SQL Server code, from Erik Darl
 
 # Before you ship that
 
-This is the agent version of the chart at https://erikdarling.com/before-you-ship. The chart walks a developer through questions about the code they're working on, and each question leads to a card with one action and its trade-offs. The cards are in `cards/`, next to this file.
+This is the agent version of the chart at https://erikdarling.com/before-you-ship. The chart walks a developer through questions about the code they're working on, and each question leads to a card with one action and its trade-offs. The cards are in `cards/`, and each card's demo code and measurements are in `evidence/`, both next to this file.
 
 ## How to use it
 
-1. Work out what's being changed:
-   - a query: does it read data or change it, and is it new or already running?
-   - a table: new, or already in use?
-   - an index: a new one, or the ones already there?
-2. Go through the questions for that path in the map below. Skip the ones that don't fit the code in front of you.
-3. For each question that fits, read its card before saying anything about it. The title alone isn't enough.
+1. If you have code to review (a diff, a script, a stored procedure), start with [Start from the code](#start-from-the-code) and note every card it points to. If you're helping someone design something, start with [the map](#the-map): work out whether it's a query (reads or changes data, new or already running), a table (new or already in use), or an index (new, or the ones already there), and go through that path's questions.
+2. Skip what doesn't fit the code in front of you.
+3. Read each card that fits before saying anything about it. The title alone isn't enough. The card has the action and its trade-offs. Open its evidence file only to quote a number or run the demo.
 4. If a card needs a plan, Query Store numbers, index usage stats or a production-sized test, ask the author for exactly that and mark the finding unverified. Do not infer it from the diff.
-5. Report what applies: the card's action, and the trade-offs from its four sections. The numbers on the cards are what the tests showed, not what the user's server will do.
+5. Report in the format under [Reporting](#reporting). The numbers on the cards are what the tests showed, not what the user's server will do.
 6. If nothing here covers the problem, say so. Don't stretch a card to fit.
 
 ## About the cards
 
+- A **Requires** line under a card's title gives the version, edition or compatibility level limits the card states. Check the user's server against it before passing the advice on.
 - The demos build their own tables. Run one card's demo at a time in a scratch database: cards define `dbo.Orders`, `dbo.Posts` and `dbo.Tasks` differently, and some borrow a table from another card and say so. Cards that need [StackOverflow2013](https://go.erikdarling.com/Stack2013) say so.
 - Tested on SQL Server 2025 CU10 at compatibility level 170, unless a card says otherwise. Check the user's version and edition before passing on advice that depends on them.
 - Timings are from a two-core VM. Compare them to each other, not to the user's server.
@@ -28,19 +26,99 @@ This is the agent version of the chart at https://erikdarling.com/before-you-shi
 
 ## First: NOLOCK
 
-Before anything else on a query, look for `NOLOCK` hints or `READ UNCOMMITTED`. If there are any, the chart stops there: "Remove those first. Then come back."
+Look for `NOLOCK` or `READUNCOMMITTED` table hints and `SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED` before anything else. Report every one first, above every other finding. If you can ask the author, ask them to take the hints out, or to confirm the dirty reads are acceptable, before you review the rest of that query. If you can't ask, review the rest anyway, and say your other findings assume the hints come out.
 
-`NOLOCK` does not mean your query takes no locks. It means your query ignores the locks other queries take. That's how you read uncommitted data that gets rolled back, count rows twice, or miss them entirely.
+What to tell the author:
 
-The damage gets permanent when a `NOLOCK` read decides what gets written. An `UPDATE` that joins to a table read `WITH (NOLOCK)` can copy in a value that later rolls back, and the copy stays. A `NOT EXISTS` check read with `NOLOCK` can skip an insert that needed to happen, or let a duplicate through. `NOLOCK` on the table an `UPDATE` or `DELETE` changes does nothing, because SQL Server ignores it there. Aaron Bertrand's [Dirty Reads, Permanent Damage](https://sqlperformance.com/2026/08/sql-performance/dirty-reads-permanent-damage) walks through these, and [Learn T-SQL With Erik: Writing Bad Data With NOLOCK Hints](https://erikdarling.com/learn-t-sql-with-erik-writing-bad-data-with-nolock-hints/) shows the first one on video.
+- `NOLOCK` doesn't mean the query takes no locks. It means the query ignores the locks other queries take, so it can read data that later rolls back, count rows twice, or miss them entirely.
+- The damage is permanent when a `NOLOCK` read decides what gets written. An `UPDATE` that joins to a table read `WITH (NOLOCK)` can copy in a value that later rolls back, and the copy stays. A `NOT EXISTS` check read with `NOLOCK` can skip an insert that needed to happen, or let a duplicate through.
+- `NOLOCK` on the table an `UPDATE` or `DELETE` changes does nothing, because SQL Server ignores it there.
+- `SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED` is `NOLOCK` on every table in every query the session runs, until something sets it back.
+- If the hints went in because readers and writers kept blocking each other, the fix is [Read Committed Snapshot Isolation](cards/readers-shouldn-t-wait-on-writers.md). It fixes readers only. Code that reads a row and then writes based on it still needs the hints on [the upsert card](cards/upserts-break-under-concurrency.md).
 
-If the query is only fast with the hints in, the hints aren't a fix, they're a confession.
+Sources: Aaron Bertrand's [Dirty Reads, Permanent Damage](https://sqlperformance.com/2026/08/sql-performance/dirty-reads-permanent-damage), and [Learn T-SQL With Erik: Writing Bad Data With NOLOCK Hints](https://erikdarling.com/learn-t-sql-with-erik-writing-bad-data-with-nolock-hints/), which shows the first one on video.
 
-Same goes for `SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED`. That's `NOLOCK` on every table in every query the session runs, until something sets it back.
+## Start from the code
 
-If the hints went in because readers and writers kept blocking each other, the fix is [Read Committed Snapshot Isolation](cards/readers-shouldn-t-wait-on-writers.md). Readers get the last committed version of the row and stop waiting, without the wrong results. It fixes readers only. Code that reads a row and then writes based on it still needs the hints on [the upsert card](cards/upserts-break-under-concurrency.md).
+Scan the code for these and read the cards they point to. One statement can match several rows. The map covers what the code can't show, like how a query runs today and who depends on it.
 
-Take them out, see what's slow, and walk back through the front door.
+### Queries that read
+
+- `SELECT *`, or more columns than the caller uses → [Ask for less](cards/ask-for-less.md)
+- `OFFSET ... FETCH`, `ROW_NUMBER()` paging, `COUNT(*) OVER ()` next to a page of rows → [Find the page, then fetch the rows](cards/find-the-page-then-fetch-the-rows.md)
+- A function on a column in `WHERE` or `ON` (`YEAR(col)`, `ISNULL(col, ...)`, `COALESCE(col, ...)`), `LIKE '%...'`, a column compared to a value of another type → [Filter so indexes can help you](cards/filter-so-indexes-can-help-you.md)
+- `col = @p OR @p IS NULL`, one query that handles every combination of optional filters → [Only search what was asked for](cards/only-search-what-was-asked-for.md)
+- `DECLARE @x = ...` followed by `WHERE col = @x` → [Local variables hide their values](cards/local-variables-hide-their-values.md)
+- `DATEDIFF`, `DATEADD`, `CONVERT` or `AT TIME ZONE` on a column, `BETWEEN` on a datetime column → [Convert the search value, not the column](cards/convert-the-search-value-not-the-column.md)
+- `STRING_SPLIT`, comma-separated list parameters, table-valued parameters → [Split lists into a #temp table](cards/split-lists-into-a-temp-table.md)
+- `OR` in a join's `ON` clause → [Don't join on OR](cards/don-t-join-on-or.md)
+- `LEFT JOIN ... WHERE x.col IS NULL`, `NOT IN (SELECT ...)` → [NOT EXISTS says what you mean](cards/not-exists-says-what-you-mean.md)
+- `UNION` or `UNION ALL` → [UNION ALL isn't always faster](cards/union-all-isn-t-always-faster.md)
+- A CTE referenced more than once, or a long chain of them → [CTEs aren't temp tables](cards/ctes-aren-t-temp-tables.md)
+- `DECLARE @t table` → [Table variables don't know what's in them](cards/table-variables-don-t-know-what-s-in-them.md)
+- Scalar UDFs, multi-statement table-valued functions (`RETURNS @t TABLE`) → [Most functions hide their work](cards/most-functions-hide-their-work.md)
+- A plan with an Eager Index Spool, or a Top right above a Scan → [An Eager Index Spool is an index you didn't create](cards/an-eager-index-spool-is-an-index-you-didn-t-create.md), [A Top above a scan means a missing index](cards/a-top-above-a-scan-means-a-missing-index.md)
+- Application code that builds parameters: `AddWithValue`, `nvarchar` parameters against `varchar` columns, `DateTime` against `datetime2` → [The app picks your parameter types](cards/the-app-picks-your-parameter-types.md)
+- Any change to a query that already runs in production → [Look before you touch](cards/look-before-you-touch.md), [Know how it runs today](cards/know-how-it-runs-today.md), [Dev lied to you](cards/dev-lied-to-you.md)
+
+### Queries that change data
+
+- `WITH (NOLOCK)`, `READUNCOMMITTED`, `SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED`: report these first, per [First: NOLOCK](#first-nolock) → [Readers shouldn't wait on writers](cards/readers-shouldn-t-wait-on-writers.md)
+- Loops, cursors, a stored procedure called once per row → [Think in batches](cards/think-in-batches.md)
+- Slow reads, calculations or calls out to anything else between `BEGIN TRANSACTION` and `COMMIT`; a modification with no index to find its rows → [Locks last as long as the transaction](cards/locks-last-as-long-as-the-transaction.md)
+- `SET IMPLICIT_TRANSACTIONS ON`, `INSERT ... EXEC`, error paths that skip `COMMIT` or `ROLLBACK` → [Transactions you didn't know you opened](cards/transactions-you-didn-t-know-you-opened.md)
+- `IF EXISTS (...) UPDATE ... ELSE INSERT`, or any update-then-insert → [Upserts break under concurrency](cards/upserts-break-under-concurrency.md)
+- `MERGE` → [What MERGE does better](cards/what-merge-does-better.md), [Upserts break under concurrency](cards/upserts-break-under-concurrency.md), [Swart's avoid list](cards/swart-s-avoid-list.md)
+- `SELECT TOP (1)` and then an `UPDATE` to claim a row, `READPAST` → [Claim it in one statement](cards/claim-it-in-one-statement.md)
+- `TRY ... CATCH`, `XACT_ABORT`, `THROW`, `RAISERROR` → [Know what you'll do with the error first](cards/know-what-you-ll-do-with-the-error-first.md)
+- `CREATE TRIGGER`, `SELECT @id = i.id FROM inserted`, writes to a table that has a trigger → [Triggers fire per statement, not per row](cards/triggers-fire-per-statement-not-per-row.md)
+- `SELECT MAX(id)` after an insert, re-reading rows just written, `SCOPE_IDENTITY()` → [Don't ask twice](cards/don-t-ask-twice.md)
+- A changed `SELECT` list on a stored procedure or view other code reads → [Mind your query consumers](cards/mind-your-query-consumers.md)
+
+### Tables
+
+- `nvarchar(max)` or `varchar(max)` by default, dates stored as strings, a column type that doesn't match what it's compared to → [Types are a performance feature](cards/types-are-a-performance-feature.md)
+- An `int` identity on a table that could reach billions of rows, `bigint` on small lookup tables, an identity next to a natural key that's already narrow, unique, static and ever-increasing → [Choose your clustering on purpose](cards/choose-your-clustering-on-purpose.md)
+- `CREATE TABLE` with no clustered index, `DELETE` from a heap → [Heaps are for staging](cards/heaps-are-for-staging.md)
+- Tables for reporting, history or facts, read with `GROUP BY` over millions of rows → [Reporting tables want columnstore](cards/reporting-tables-want-columnstore.md)
+- Columns left nullable or unconstrained, constraints created or re-enabled `WITH NOCHECK`, `CHECK` or `DEFAULT` constraints that call scalar functions, foreign key columns with no index → [Constraints help the optimizer](cards/constraints-help-the-optimizer.md)
+- One very wide table, or a table split into several narrow ones → [Normalize until it hurts, then measure](cards/normalize-until-it-hurts-then-measure.md)
+- `DELETE ... WHERE date_column < ...` to purge or archive old rows → [Move partitions, not rows](cards/move-partitions-not-rows.md)
+- `is_deleted` or similar flags → [Soft deletes are a filter on every query](cards/soft-deletes-are-a-filter-on-every-query.md)
+- `ALTER TABLE ... ADD` → [Some ALTERs are free. Some aren't.](cards/some-alters-are-free-some-aren-t.md)
+- `ALTER TABLE ... ALTER COLUMN` → [The most dangerous ALTER](cards/the-most-dangerous-alter.md)
+
+### Indexes
+
+- `CREATE INDEX`, `ALTER INDEX ... REBUILD` or `DROP INDEX` in a deploy script for a live table → [Index work on a live table](cards/index-work-on-a-live-table.md)
+- A new index built from a missing index request → [Audit before you add](cards/audit-before-you-add.md), [Key order decides the seek](cards/key-order-decides-the-seek.md), [Widen before you add](cards/widen-before-you-add.md)
+- A new index whose leading keys match an existing one → [Widen before you add](cards/widen-before-you-add.md), [Merge the near-duplicates](cards/merge-the-near-duplicates.md)
+- Two inequality predicates on the same index's keys → [Key order decides the seek](cards/key-order-decides-the-seek.md)
+- `ORDER BY` columns sitting in `INCLUDE` → [Keys sort. Includes ride along.](cards/keys-sort-includes-ride-along.md)
+- `CREATE INDEX ... WHERE` → [Filtered indexes need to see the filter](cards/filtered-indexes-need-to-see-the-filter.md)
+- An expression in `WHERE` across two columns or inside a function, like `DATEDIFF(MINUTE, opened, closed) > 1440` → [Index the expression with a computed column](cards/index-the-expression-with-a-computed-column.md)
+- `CREATE VIEW ... WITH SCHEMABINDING` with a unique clustered index on it → [Indexed views move the work to the writes](cards/indexed-views-move-the-work-to-the-writes.md)
+- `CREATE INDEX` with no `DATA_COMPRESSION` → [Start with page compression](cards/start-with-page-compression.md)
+- An index on a write-heavy table, or an `INCLUDE` on a column the workload updates → [The write tax](cards/the-write-tax.md)
+- `DROP INDEX` because usage stats say it's unused → [Unused since when?](cards/unused-since-when.md), [Disable, then drop](cards/disable-then-drop.md)
+
+## Reporting
+
+Order the findings by what they cost the user, worst first:
+
+1. Wrong or lost data: `NOLOCK` reads that decide writes, upserts and `MERGE` under concurrency, transactions left open, errors that leave work half done, triggers that assume one row.
+2. Blocking: long transactions, lock escalation, index or `ALTER` work on a live table.
+3. Speed: everything else.
+
+For each finding:
+
+- **Where:** the file and line, or the statement.
+- **Card:** its title, linked.
+- **Do:** the card's action, applied to this code.
+- **Costs:** the trade-off from the card that matters most here.
+- **Check:** what you couldn't confirm from the code (a plan, Query Store numbers, index usage, row counts, the version or edition), or "nothing".
+
+Keep to what the cards back. If you spot something else, list it separately and say no card covers it.
 
 ## The map
 
