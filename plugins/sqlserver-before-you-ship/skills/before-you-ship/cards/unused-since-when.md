@@ -27,24 +27,9 @@ Instant: one query, before you believe any zero.
 
 Dropping on a three-week zero, then meeting the year-end close process. This is why disable-then-drop exists: it converts this mistake from an incident into a rebuild.
 
-## Deeper dive
+## Evidence
 
-Before believing any zero in the usage stats, find out when they started counting:
-
-```sql
-SELECT
-    osi.sqlserver_start_time,
-    uptime_days =
-        DATEDIFF
-        (
-            DAY,
-            osi.sqlserver_start_time,
-            SYSDATETIME()
-        )
-FROM sys.dm_os_sys_info AS osi;
-```
-
-That catches instance restarts only. A database restore, detach, or `AUTO_CLOSE` resets its counts too, so if any of those happened more recently, count from then. The 14- and 7-day thresholds are the guardrails `sp_IndexCleanup` enforces: it warns under 14 days and forces dedupe-only mode under 7.
+Demo code and measurements: [evidence/unused-since-when.md](../evidence/unused-since-when.md). Open it to quote a number or run the demo.
 
 ## Reading
 

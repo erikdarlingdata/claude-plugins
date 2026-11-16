@@ -18,7 +18,7 @@
     {
       "name": "sqlserver-before-you-ship",
       "description": "Trade-offs to check before shipping SQL Server code: 54 cards from the Before You Ship That chart, each with one action and what it costs, what it risks, how fast it works, and when it backfires. Covers new and existing queries, tables, and indexes.",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "source": "./plugins/sqlserver-before-you-ship"
     }
   ]
