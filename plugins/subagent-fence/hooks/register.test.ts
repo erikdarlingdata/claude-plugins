@@ -129,6 +129,16 @@ test('shared_checkout_root limits the shared-checkout guard to checkouts under i
   expect(await run($, bash('git -C C:/w/app checkout dev'), 'a1')).toMatch(/git checkout in/)
 })
 
+test('shared_checkout_root may name the checkout itself', { options: { guard_shared_checkout: true, shared_checkout_root: 'C:\\w\\app' } }, async ($, on) => {
+  engine(on)
+  expect(await run($, bash('git -C C:/w/app checkout dev'), 'a1')).toMatch(/git checkout in/)
+  expect(await run($, bash('git -C C:/w/app/ stash'), 'a1')).toMatch(/git stash in/)
+  expect(await run($, bash('cd /c/w/app && git reset --hard'), 'a1')).toMatch(/git reset in/)
+  expect(await run($, { tool: 'Edit', file_path: 'C:\\w\\app\\x.cs', old_string: 'a', new_string: 'b' }, 'a1')).toMatch(/shared checkout/)
+  expect(await run($, bash('git -C C:/w/app/.claude/worktrees/a1 commit -m x'), 'a1')).toBeUndefined()
+  expect(await run($, bash('git -C C:/repo checkout dev'), 'a1')).toBeUndefined()
+})
+
 test('read_limit_bytes is off by default', async ($, on) => {
   engine(on)
   expect(await run($, { tool: 'Read', file_path: 'C:\\x\\big.cs' }, 'a1')).toBeUndefined()

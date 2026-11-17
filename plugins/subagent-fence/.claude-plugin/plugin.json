@@ -1,7 +1,7 @@
 {
   "name": "subagent-fence",
   "displayName": "Subagent Fence",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Refuses force-pushes, pushes to protected branches, --no-verify and kills by process name; optionally fences off listed paths, a subagent's edits to a shared checkout and its whole-file reads of large files",
   "author": { "name": "Erik Darling", "email": "erik@erikdarling.com", "url": "https://erikdarling.com" },
   "homepage": "https://erikdarling.com",
@@ -55,7 +55,7 @@
     "shared_checkout_root": {
       "type": "string",
       "title": "Shared checkout root",
-      "description": "Only treat checkouts under this folder as shared. Leave empty to detect a shared checkout anywhere: any folder whose .git is a directory, not the .git file a linked worktree has.",
+      "description": "Only treat checkouts at or under this folder as shared: the checkout itself or a folder that holds it. Leave empty to detect a shared checkout anywhere: any folder whose .git is a directory, not the .git file a linked worktree has.",
       "default": ""
     },
     "read_limit_bytes": {
