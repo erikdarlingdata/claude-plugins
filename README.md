@@ -131,7 +131,7 @@ stops a subagent reading a big text file whole instead of by offset and limit.
 | `guard_kill_by_name` | on | Refuse killing processes by name |
 | `banned_paths` | none | Folders that nothing reads, writes or enters |
 | `guard_shared_checkout` | off | Keep subagents out of plain git checkouts |
-| `shared_checkout_root` | empty | Limit that guard to checkouts under this folder. Empty detects a plain checkout anywhere: a folder whose `.git` is a directory, where a linked worktree has a `.git` file |
+| `shared_checkout_root` | empty | Limit that guard to checkouts at or under this folder: the checkout itself or a folder that holds it. Empty detects a plain checkout anywhere: a folder whose `.git` is a directory, where a linked worktree has a `.git` file |
 | `read_limit_bytes` | 0 (off) | Refuse a subagent's `Read` of a text file over this size when it gives no `limit` |
 
 ### `model-allowlist`

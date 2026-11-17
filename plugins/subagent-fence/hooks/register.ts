@@ -70,13 +70,13 @@ function pushProblem(command: string, cfg: Config): string | undefined {
 }
 
 // A plain git checkout is shared; a linked worktree is not. Walks up from the path to the nearest `.git`:
-// a directory means a plain checkout, a file means a linked worktree. With a root set, only paths under it count.
+// a directory means a plain checkout, a file means a linked worktree. With a root set, only the root and paths under it count.
 async function isSharedCheckout($: EngineInterface, path: unknown, cfg: Config): Promise<boolean> {
   const n = norm(path)
   if (!/^([a-z]:)?\//.test(n)) {
     return false // relative: the working directory is unknown here
   }
-  if (cfg.sharedRoot && !n.startsWith(`${cfg.sharedRoot}/`)) {
+  if (cfg.sharedRoot && n !== cfg.sharedRoot && !n.startsWith(`${cfg.sharedRoot}/`)) {
     return false
   }
   let dir = slashes(path).replace(/^\/([a-z])\//i, '$1:/').replace(/(.)\/$/, '$1')

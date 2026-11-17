@@ -90,7 +90,7 @@
       "displayName": "Subagent Fence",
       "source": "./plugins/subagent-fence",
       "description": "Refuses force-pushes, pushes to protected branches, git commands that skip hooks and kills by process name; optionally bans folders, keeps subagents out of shared checkouts and stops whole-file reads of big files.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": {
         "name": "Erik Darling",
         "email": "erik@erikdarling.com",
