@@ -166,7 +166,6 @@ bill is cache writes, not output. Measured on one week of such sessions (pi
   Prompt text that extensions add there (pi-background-tasks, the agent-browser
   extension, pi-memory) disappeared and came back, and each change rewrote
   the whole conversation. pi 1.2.0 fixes this.
-- pi-lens injects one-time messages that the next request does not have.
 - pi-memory keeps one memory snapshot per pi process, and pi-subagents runs
   its children in the parent's process. Each subagent that loads pi-memory
   refreshes the snapshot at its start, so the parent's next request has a new
@@ -179,8 +178,7 @@ bill is cache writes, not output. Measured on one week of such sessions (pi
 The `cache-tuning.ts` recipe (section 14) covers the first, adds a
 keep-warm for idle sessions and logs the cause of every full rewrite. On pi
 before 1.2.0 it also works around the second. It holds the memory block for
-the fifth. For the third and fourth, see the pi-lens and pi-memory notes in
-section 6.
+the fifth. For the third and fourth, see the pi-memory note in section 6.
 
 ### When to compact
 
@@ -404,7 +402,6 @@ stack.
 ### Core coding
 
 ```bash
-pi install npm:pi-lens
 pi install npm:pi-memory
 ```
 
@@ -428,10 +425,17 @@ jobs do not. They use the agent files that the session loaded, until the
 session reloads or runs the Agent tool. After you change an agent file, run
 `/reload` in each session that has scheduled jobs.
 
-In long-running sessions on a cached model, turn off pi-lens context injection
-with `{"contextInjection": {"enabled": false}}` in `~/.pi-lens/config.json`.
-Its messages are sent once and not saved, so the next request rewrites the
-conversation after them. Tools, LSP and the read guard keep working.
+We removed pi-lens (its after-write checks and read-before-edit guard). Its
+warnings were about 70% noise. Before each `bash` call it also scans the
+session folder for changed files. In a large non-git folder, such as a home
+folder, that scan takes about 2 seconds and then gives up. 4.4.5 runs the same
+scan before every non-built-in tool call too. Measured without pi-lens:
+`bash true` takes 14-16 ms. Upstream issue:
+https://github.com/apmantza/pi-lens/issues/4905. If you keep pi-lens, start pi
+from a git repo, and turn off its context injection with
+`{"contextInjection": {"enabled": false}}` in `~/.pi-lens/config.json`. Its
+messages are sent once and not saved, so the next request rewrites the
+conversation after them.
 
 ### Delegation
 
@@ -447,21 +451,49 @@ tools cause startup conflicts.
 ### Collaboration
 
 ```bash
-pi install npm:pi-messenger
 pi install npm:pi-intercom
 pi install npm:pi-background-tasks
 ```
 
-`pi-messenger` provides rooms/tasks/crew coordination. `pi-intercom` is direct
-same-machine session-to-session messaging. Install only what you use; each active
-tool and its schema adds model context.
+`pi-intercom` is direct same-machine session-to-session messaging. Install only
+what you use, because every active tool's schema is sent with every request.
+
+To keep only the `bg_run` family of `pi-background-tasks`, set this in `~/.zshrc`:
+
+```bash
+export PI_BG_FEATURES=process,attribution
+```
+
+It drops `fusion_*`, `bg_delegate`, `bg_result` and `bg_run_pi_attested`. To drop
+the `SubagentWorkflow` tool, set `"workflowsEnabled": false` in
+`~/.pi/agent/subagents.json`. In a 2026-10-24 test, these two settings and removing
+`pi-messenger` cut a fresh session's first request from 61.7k to 44.8k tokens.
+
+Three more trims took it to about 35k:
+
+- Skills: the Datadog plugin's 59 skills moved out of `~/.pi/agent/skills/` (to
+  `~/.pi/agent/skills-datadog/`). pi-lens and its skills were later removed
+  (see section 6).
+- `~/.pi/agent/web-search.json` turns off `source_check` and limits `web_search` to
+  the providers that answer without a key: exa (the automatic choice), duckduckgo,
+  keenable, degoog and anysearch.
+
+  ```json
+  {
+    "tools": { "sourceCheck": { "enabled": false } },
+    "webSearch": { "allowedProviders": ["exa", "duckduckgo", "keenable", "degoog", "anysearch"] }
+  }
+  ```
+
+- `"toolDescriptionMode": "custom"` in `subagents.json` with a shorter
+  `~/.pi/agent/agent-tool-description.md` (placeholders `{{typeList}}`, `{{agentDir}}`,
+  `{{isolationGuideline}}`, `{{scheduleGuideline}}`).
 
 ### Web and browser
 
 ```bash
 pi install npm:pi-web-access
 pi install npm:pi-agent-browser-native
-pi install npm:pi-web-ui
 ```
 
 ### Cosmetic compatibility
@@ -507,8 +539,6 @@ npm install -g @tobilu/qmd
 # Optional browser recording
 brew install ffmpeg
 
-# Put the web UI command on PATH
-npm install -g pi-web-ui
 ```
 
 The tested company npm configuration blocks lifecycle scripts by default, while
@@ -521,8 +551,10 @@ npm install -g --allow-scripts=agent-browser agent-browser
 This is npm-version and registry-policy specific; `npm install --help` shows
 whether `--allow-scripts` is available.
 
-`pi-agent-browser-native` needs Node 24.21 or newer and Pi 1.0.0 or newer. Any
-stable agent-browser 0.35.0 or later works with it.
+`pi-agent-browser-native` 0.9.32 needs Node 24.22.3 or newer (or 26.13.1 or newer
+on Node 26), Pi 1.5.2 or newer, and agent-browser 0.43.0 or newer. To update the
+CLI, run `agent-browser upgrade`. Since 0.9.18 it has no `agent_browser_code`
+tool. Use `agent_browser` with `batch`, or Pi's `codemode`.
 
 ## 8. Verify the setup
 
@@ -545,9 +577,7 @@ Then verify only the profiles you installed:
 3. Subagents — run one tiny read-only child and confirm its **effective** model in the result/widget.
 4. Browser — open <https://example.com> and take an interactive snapshot; expect `@e1`-style refs.
 5. Memory — ask for memory status; qmd should be available.
-6. Diagnostics — introduce a deliberate type error in a disposable file and confirm Pi Lens reports it; then remove it.
-7. Web UI — run `pi-web-ui`, open <http://localhost:8787>, then Ctrl+C.
-8. Intercom — from another session in the same folder, use `/intercom` or Alt+M.
+6. Intercom — from another session in the same folder, use `/intercom` or Alt+M.
 
 The startup header lists loaded resources. `pi list` is the authoritative package
 inventory.
@@ -686,6 +716,7 @@ Restart sessions once so they register and name important ones with `/name`.
 ```bash
 pi-resume-sessions
 pi-resume-sessions --list
+pi-resume-sessions --commands
 ```
 
 Rules:
@@ -695,6 +726,9 @@ Rules:
 - Sessions idle over 72h are skipped but reported; tune with `--max-age`,
   `--named-only`, or `--all`.
 - `--tmux` and `--terminal` are available alternatives to Ghostty tabs.
+- Before you quit sessions by hand, run `--commands`. It prints a
+  `cd <folder> && pi --session <id>` line for each running session. pi also
+  prints the resume command for one session when you quit it.
 - On first Ghostty automation, allow Terminal to control Ghostty. If the macOS
   prompt was dismissed: `tccutil reset AppleEvents com.apple.Terminal`.
 - There is deliberately no LaunchAgent; run the script after a reboot.
@@ -745,6 +779,18 @@ child-side half:
   and reports before the hard stop.
 - **A `lane` agent** for code-editing lanes.
 - **Written rules** for fan-out, model tiers, context and ranking.
+
+A dollar check-in: set `signals.costUsd` (for example `10`) in
+`subagent-watchdog.json` to wake the parent when one subagent run passes that
+cost. Opus lanes can reach $10–15 a run.
+
+If your OpenRouter key has a monthly budget, a small extension can watch it.
+Poll `GET https://openrouter.ai/api/v1/key` every 15 minutes and read
+`data.effective_budget` (`limit_usd`, `spend_usd`, `remaining_usd`,
+`resets_at`). Show the remaining budget in the footer, and warn the user and the
+agent at 80%, 90% and 95%. Deliver the agent warning with the next turn
+(`deliverAs: "nextTurn"`), so an idle session spends nothing. At the limit every
+request fails, in every session.
 
 The wall is deliberately not auto-loaded; subagents opt in through their agent
 file's `extensions:` line. With it in place, turn the watchdog's `turns`,
