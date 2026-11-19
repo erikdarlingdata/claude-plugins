@@ -22,7 +22,7 @@ Immediate, and biggest when the query only needs a small number of rows. If it h
 
 ## When it backfires
 
-A rewrite that changes the answer. `COALESCE(t.priority, 0) = 0` was matching the real zeroes as well as the `NULL`s, and a time-zone shift on the column has to move to the search value, not disappear, or the rows near midnight land in the wrong day. Compare row counts from the old predicate and the new one, with the same values, before it ships.
+A rewrite that changes the answer. `COALESCE(t.priority, 0) = 0` was matching the real zeroes as well as the `NULL`s, and a time-zone shift on the column has to move to the search value, not disappear, or the rows near midnight land in the wrong day. Compare row counts from the old predicate and the new one, with the same values, before it ships. Equal counts can still hide different rows, because a moved boundary can drop some rows and pick up as many others, so compare the keys too.
 
 ## Evidence
 

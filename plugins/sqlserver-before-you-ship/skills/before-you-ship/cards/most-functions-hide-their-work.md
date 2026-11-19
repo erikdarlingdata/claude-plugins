@@ -6,7 +6,7 @@ Where it sits in the chart: A query > No NOLOCK > It reads data > A new query > 
 
 Functions are how developers keep logic in one place, and two of SQL Server's three kinds make every query that calls them pay for it:
 
-- A scalar [UDF](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-function-transact-sql) (`RETURNS` some data type) runs once for every row that needs a result and keeps the whole query from going parallel. It also hides its work from the plan: the Compute Scalar that calls it shows next to no cost.
+- A scalar [UDF](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-function-transact-sql) (`RETURNS` some data type) that SQL Server doesn't inline runs once for every row that needs a result and keeps the whole query from going parallel. It also hides its work from the plan: the Compute Scalar that calls it shows next to no cost.
 - A multi-statement table-valued function (`RETURNS @some_table_variable`) fills a table variable with a serial insert, and the read back out of it is serial too, and its row estimate is a fixed guess. Newer versions can sometimes swap in the real count, but there are never any statistics on what's inside.
 - The good kind is the inline table-valued function (`RETURNS table`): one `SELECT` the optimizer can see straight through, which makes it a parameterized view.
 

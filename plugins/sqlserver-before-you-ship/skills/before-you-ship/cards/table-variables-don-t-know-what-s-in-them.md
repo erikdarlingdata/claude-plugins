@@ -6,7 +6,7 @@ Where it sits in the chart: A query > No NOLOCK > It reads data > A new query > 
 
 People pick table variables because they think they live in memory, or that they win under some magic number of rows. They're in tempdb like `#temp` tables, and no row count makes them safe.
 
-What they're missing is statistics. SQL Server never knows what values a table variable holds, even with an index on it. Below compatibility level 150 (**SQL Server 2019**), it doesn't know how many rows it holds either, so it guesses one unless the statement recompiles. On every version, any modification to one runs single-threaded.
+What they're missing is statistics. SQL Server never knows what values a table variable holds, even with an index on it. Below compatibility level 150 (**SQL Server 2019**), it doesn't know how many rows it holds either, so it guesses one unless the statement recompiles. At 150 and up, it gets the row count the first time the statement compiles, and the cached plan keeps that count for later calls, however many rows they bring. On every version, any modification to one runs single-threaded.
 
 For intermediate results that feed another query, a `#temp` table is the better default.
 

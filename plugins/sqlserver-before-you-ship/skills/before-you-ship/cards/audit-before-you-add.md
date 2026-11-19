@@ -12,7 +12,7 @@ The audit is a query. The savings are the writes, backup space, and maintenance 
 
 ## What it risks
 
-Zero reads isn't always zero use. Reads on an availability group secondary show up only in that secondary's counts. A unique index enforces its rule without logging a single read (and see [Disable, then drop](disable-then-drop.md) before touching one). [Unused since when?](unused-since-when.md) covers how far back the counts go.
+Zero reads isn't always zero use. Reads on an availability group secondary show up only in that secondary's counts. A unique index enforces its rule, and tells the optimizer the values are unique, without logging a single read (and see [Disable, then drop](disable-then-drop.md) before touching one). [Unused since when?](unused-since-when.md) covers how far back the counts go.
 
 ## How fast it works
 
