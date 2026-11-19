@@ -16,7 +16,7 @@ Nothing, if the variable is only a copy of a parameter, or an expression you can
 
 ## What it risks
 
-Parameter sniffing, when the variable was there to hide it. SQL Server builds a parameter's plan for the first value and reuses it for the next. Here, Parameter Sensitive Plan Optimization kept separate plans for vote types 11 and 2. With it turned off, type 2 reused type 11's seek-and-lookup plan for 1.4 million rows and read 4.2 million pages. [Dev lied to you](dev-lied-to-you.md) covers testing for it.
+Parameter sniffing, when the variable was there to hide it. SQL Server builds a parameter's plan for the first value and reuses it for the next. Here, Parameter Sensitive Plan Optimization (**SQL Server 2022** and later, at compatibility level 160 or higher) kept separate plans for vote types 11 and 2. With it turned off, type 2 reused type 11's seek-and-lookup plan for 1.4 million rows and read 4.2 million pages. [Dev lied to you](dev-lied-to-you.md) covers testing for it.
 
 ## How fast it works
 

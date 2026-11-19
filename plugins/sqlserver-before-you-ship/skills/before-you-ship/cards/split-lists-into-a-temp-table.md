@@ -6,7 +6,7 @@ Apps send lists as comma-separated strings, and the query splits them with [STRI
 
 When the list feeds a join, put the split values into a `#temp` table first. Convert them to the type of the column they'll be compared with. Then the next query compiles against real row counts and statistics.
 
-Table-valued parameters are table variables underneath, with the same blind spot: [Table variables don't know what's in them](table-variables-don-t-know-what-s-in-them.md).
+Table-valued parameters are table variables underneath, with the same blind spot: [Table variables don't know what's in them](table-variables-don-t-know-what-s-in-them.md). SQL Server does see how many rows a table-valued parameter holds when the plan compiles, but the cached plan keeps that count for later calls, and it never knows which values are in it.
 
 ## What it costs
 

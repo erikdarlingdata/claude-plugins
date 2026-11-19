@@ -20,7 +20,7 @@ Fast. Operator times in an actual plan point at the slow branch. The plan's wait
 
 ## When it backfires
 
-Capturing an actual plan changes what you're measuring. Collecting per-operator timings and row counts adds overhead that can distort the numbers on short, fast queries. So confirm small differences with plan capture turned off.
+Capturing an actual plan changes what you're measuring. Collecting per-operator timings and row counts adds overhead that can distort the numbers on short, fast queries. It adds up per row and per execution, so it's largest for a scalar UDF that isn't inlined and for loops, and a before-and-after comparison taken with plans on overstates what rewriting those gained. So confirm small differences, and any rewrite of a function or a loop, with plan capture turned off.
 
 ## Evidence
 

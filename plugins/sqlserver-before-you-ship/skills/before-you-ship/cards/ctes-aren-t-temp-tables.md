@@ -20,7 +20,7 @@ Immediate. Materializing an expensive CTE that's referenced several times is one
 
 ## When it backfires
 
-Materializing a big result that the outer query mostly throws away. The `#temp` table gets every row the query that fills it returns, so filters the outer query would have applied early only happen after the write to tempdb. Put those filters in the query that fills it.
+Materializing a big result that the outer query mostly throws away. The `#temp` table gets every row the query that fills it returns, so filters the outer query would have applied early only happen after the write to tempdb. Put those filters in the query that fills it. A filter moved past a `TOP`, a window function, an aggregate, or an outer join can change which rows come back, so check before moving one of those.
 
 ## Evidence
 

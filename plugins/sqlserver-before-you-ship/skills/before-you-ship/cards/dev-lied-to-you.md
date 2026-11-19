@@ -4,7 +4,9 @@ Where it sits in the chart: A query > No NOLOCK > It reads data > An existing qu
 
 A thousand rows and one friendly test parameter tell you nothing. Parameterized code gets one cached plan, built for whatever values it was last compiled with. A plan sized for the small case reused for the big case is a disaster. And it's a disaster you cannot see in dev because dev doesn't have the big case.
 
-The other direction hides until there's load: a plan sized for the big case, reused for the small ones, only looks wasteful one call at a time. Under concurrency, every small call asks for the big plan's memory grant and parallel threads at once, and they queue for both.
+The other direction hides until there's load: a plan sized for the big case, reused for the small ones, only looks wasteful one call at a time. Under concurrency, every small call asks for the big plan's memory grant and parallel threads at once, and they queue for both. On editions with memory grant feedback, the grant can shrink after the first runs, but the parallel plan stays.
+
+**SQL Server 2022** and later, at compatibility level 160 or higher, can keep several plans for one statement with [Parameter Sensitive Plan Optimization](https://learn.microsoft.com/en-us/sql/relational-databases/performance/parameter-sensitive-plan-optimization). It only covers equality predicates on columns it finds skewed enough, and each plan is still reused for every value in its range, so test the same way. Its plans show `OPTION (PLAN PER VALUE(...))` at the end of their query text, and `sys.query_store_query_variant` ties each one to its parent query.
 
 ## What it costs
 
@@ -16,7 +18,7 @@ The local-variable "fix" for parameter sniffing (planning around the compile-tim
 
 ## How fast it works
 
-An index that makes the plan shape stable across parameter values is the fastest lasting fix when there is one. Often there isn't, because no single plan is good for every value. Then dynamic SQL can give each bucket of values its own plan, with hints that fit the bucket, or a `#temp` table can hold the parameter-sensitive part so the rest of the query plans for the rows that actually came back. `RECOMPILE` works immediately too, but charges a compile on every execution.
+An index that makes the plan shape stable across parameter values is the fastest lasting fix when there is one. Often there isn't, because no single plan is good for every value. Then dynamic SQL can give each bucket of values its own plan, with hints that fit the bucket, or a `#temp` table can hold the parameter-sensitive part so the rest of the query plans for the rows that actually came back. `RECOMPILE` works immediately too, but charges a compile on every execution, and a statement that compiles every time never gets memory grant feedback.
 
 ## When it backfires
 
