@@ -328,7 +328,12 @@ interface SubagentRecord {
   session?: {
     getSessionStats?: () => { contextUsage?: { percent?: number } | null };
     /** Live model exists on every running AgentSession, regardless of spawn path. */
-    state?: { model?: { provider?: string; id?: string } };
+    state?: {
+      model?: { provider?: string; id?: string };
+      /** Tool call ids executing right now (pi-agent-core AgentState). */
+      pendingToolCalls?: ReadonlySet<string>;
+      messages?: Array<{ role?: string; timestamp?: number; content?: unknown }>;
+    };
     /** Same call pi-subagents' own steerAgent() makes — injects a user message into the child. */
     steer?: (message: string) => Promise<void>;
   };
@@ -552,7 +557,52 @@ export function dueStall(w: Watched, cfg: WatchdogConfig, now: number): Breach[]
   return idle >= t ? [{ name: "stallMinutes", value: idle, threshold: t }] : [];
 }
 
-export function inFlightOf(w: Watched, now: number): PendingCheckIn["inFlight"] {
+/** False for a check-in whose only breach is a stall (stalls are not capped). */
+export function countsTowardCap(item: PendingCheckIn): boolean {
+  return !item.breaches.every((b) => b.name === "stallMinutes");
+}
+
+/**
+ * The tool call running right now, from the live session. The transcript file
+ * is no help here: pi-subagents writes a tool call to it only together with its
+ * result, so a hung call never shows up there. Undefined = state unavailable.
+ */
+export function liveInFlight(rec: SubagentRecord, now: number): PendingCheckIn["inFlight"] | undefined {
+  let state: NonNullable<SubagentRecord["session"]>["state"];
+  try {
+    state = rec.session?.state;
+  } catch {
+    return undefined;
+  }
+  const pending = state?.pendingToolCalls;
+  const messages = state?.messages;
+  if (!pending || !Array.isArray(messages)) return undefined;
+  if (pending.size === 0) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== "assistant" || !Array.isArray(m.content)) continue;
+    const calls = (m.content as Array<{ type?: string; id?: string; name?: string; arguments?: any }>).filter(
+      (c) => c?.type === "toolCall" && c.id !== undefined && pending.has(c.id),
+    );
+    const c = calls[calls.length - 1];
+    if (!c) continue;
+    let command = typeof c.arguments?.command === "string" ? c.arguments.command : undefined;
+    if (command === undefined) {
+      try {
+        command = JSON.stringify(c.arguments ?? {});
+      } catch {
+        command = "{…}";
+      }
+    }
+    const started = typeof m.timestamp === "number" ? m.timestamp : now;
+    return { name: String(c.name ?? "tool"), runningMinutes: Math.max(0, (now - started) / 60_000), command: command.slice(0, 200) };
+  }
+  return undefined;
+}
+
+export function inFlightOf(w: Watched, now: number, rec?: SubagentRecord): PendingCheckIn["inFlight"] {
+  const live = rec ? liveInFlight(rec, now) : undefined;
+  if (live !== undefined) return live;
   const o = w.openCalls[w.openCalls.length - 1];
   return o ? { name: o.name, runningMinutes: Math.max(0, (now - o.startedAt) / 60_000), command: o.command } : null;
 }
@@ -741,7 +791,7 @@ export function snapshotCheckIn(
     breaches: breaches.map((b) => ({ ...b })),
     advice: adviceLines(w, v, breaches),
     recentTools: [...w.recentTools],
-    inFlight: breaches.some((b) => b.name === "stallMinutes") ? inFlightOf(w, Date.now()) : undefined,
+    inFlight: breaches.some((b) => b.name === "stallMinutes") ? inFlightOf(w, Date.now(), rec) : undefined,
     reason,
   };
 }
@@ -1022,7 +1072,9 @@ export default function (pi: ExtensionAPI) {
       }
       pendingCheckIns.delete(id);
       w.wakeCount += 1;
-      w.automaticWakeCount += 1;
+      // A stall-only check-in does not use up the cap: harmless stalls (long
+      // queries, test runs) would otherwise silence later re-alerts.
+      if (countsTowardCap(item)) w.automaticWakeCount += 1;
       item.checkInNumber = w.wakeCount;
       items.push(item);
     }
@@ -1043,7 +1095,7 @@ export default function (pi: ExtensionAPI) {
         const w = roster.get(item.id);
         if (w) {
           w.wakeCount = Math.max(0, w.wakeCount - 1);
-          w.automaticWakeCount = Math.max(0, w.automaticWakeCount - 1);
+          if (countsTowardCap(item)) w.automaticWakeCount = Math.max(0, w.automaticWakeCount - 1);
           w.lastWakeAt = 0;
           for (const breach of item.breaches) delete w.alertedAt[breach.name];
         }
