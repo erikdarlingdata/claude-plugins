@@ -60,6 +60,7 @@ envelope of a healthy, thorough worker (~113k tokens / 10 tools / 7 turns /
 | `minutes` | 10 | wall clock — the **only** signal that catches a tool call wedged mid-execution |
 | `compactions` | 1 | the child auto-compacted; on a chunk-sized task that's a red flag |
 | `costUsd` | off (`null`) | one agent's lifetime USD spend (`lifetimeUsage.cost`); shown as `$1.23` in vitals |
+| `stallMinutes` | off (`null`) | minutes with no progress: no transcript growth and no change in tool uses or tokens. Catches a hung tool call, which grows nothing. One check-in per stall, names the tool call in flight, never kills anything. Suggested: `5` |
 
 Different task shapes trip different signals first (big-read agents hit
 `tokens`, step-per-turn agents hit `turns`, wedged tools hit only `minutes`) —
@@ -108,7 +109,8 @@ restart either way.
     "toolUses": 40,
     "turns": 30,
     "minutes": 10,
-    "compactions": 1
+    "compactions": 1,
+    "stallMinutes": 5
   },
   "models": { "required": null, "onViolation": "notify", "unknownGraceMs": 30000 },
   "hardStop": { "enabled": false, "tokens": 1500000, "minutes": 45 }
