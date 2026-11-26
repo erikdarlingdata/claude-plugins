@@ -53,6 +53,12 @@ interface Signals {
   compactions?: number | null;
   /** Lifetime USD spend of one agent (record.lifetimeUsage.cost). null = off. */
   costUsd?: number | null;
+  /**
+   * Minutes of no progress (no transcript growth, no tool-use or token change)
+   * before one check-in. Fires on silence, not growth: it catches a hung tool
+   * call. Once per stall; never auto-kills. null = off.
+   */
+  stallMinutes?: number | null;
 }
 
 /** Spend budgets across agents. Warnings only — a crossing never stops an agent. null/absent = off. */
@@ -136,6 +142,7 @@ const DEFAULTS: WatchdogConfig = {
     minutes: 10,
     compactions: 1,
     costUsd: null,
+    stallMinutes: null,
   },
   budget: { sessionUsd: null, dailyUsd: null, ledgerDir: null },
   models: {
@@ -263,6 +270,7 @@ function loadConfig(cwd: string, projectTrusted: boolean): WatchdogConfig {
       minutes: optNum(m.signals.minutes, DEFAULTS.signals.minutes),
       compactions: optNum(m.signals.compactions, DEFAULTS.signals.compactions),
       costUsd: optNum(m.signals.costUsd, DEFAULTS.signals.costUsd),
+      stallMinutes: optNum(m.signals.stallMinutes, DEFAULTS.signals.stallMinutes),
     },
     budget: {
       sessionUsd: optNum(m.budget.sessionUsd, null),
@@ -344,6 +352,12 @@ interface Watched {
   transcriptOffset: number;
   turns: number;
   recentTools: string[];
+  /** Tool calls seen in the transcript with no toolResult yet, oldest first. */
+  openCalls: OpenCall[];
+  /** Stall tracking: last time anything moved, and the values seen then. */
+  lastProgressAt?: number;
+  progressSig?: string;
+  fileSize: number;
   // Alerting state
   lastWakeAt: number;
   /** signal name -> value at the last alert that included it (re-arm bookkeeping). */
@@ -362,6 +376,14 @@ interface Watched {
   missingSince?: number;
   /** Counter snapshot at the previous check-in — lets the next one say "unchanged". */
   lastSample?: { tokens: number; toolUses: number; turns: number };
+}
+
+interface OpenCall {
+  id: string;
+  name: string;
+  startedAt: number;
+  /** First 200 chars of the bash command, or of the JSON args for other tools. */
+  command: string;
 }
 
 interface Vitals {
@@ -388,12 +410,14 @@ interface PendingCheckIn {
   breaches: Breach[];
   advice: string[];
   recentTools: string[];
+  /** Set on stall check-ins: the newest tool call still open, if any. */
+  inFlight?: { name: string; runningMinutes: number; command: string } | null;
   reason?: string;
 }
 
 const MAX_TRANSCRIPT_READ = 8 * 1024 * 1024; // per tick, per agent
 
-function newWatched(id: string, type: string, description: string): Watched {
+export function newWatched(id: string, type: string, description: string): Watched {
   return {
     id,
     type,
@@ -401,6 +425,8 @@ function newWatched(id: string, type: string, description: string): Watched {
     transcriptOffset: 0,
     turns: 0,
     recentTools: [],
+    openCalls: [],
+    fileSize: 0,
     lastWakeAt: 0,
     alertedAt: {},
     hardStopped: false,
@@ -416,7 +442,7 @@ function newWatched(id: string, type: string, description: string): Watched {
  * decoded, so a multibyte char split at the read cap can't produce a torn
  * fragment or desync the offset (review finding #6).
  */
-function updateFromTranscript(w: Watched, file: string): void {
+export function updateFromTranscript(w: Watched, file: string): void {
   let size: number;
   try {
     size = statSync(file).size;
@@ -428,7 +454,9 @@ function updateFromTranscript(w: Watched, file: string): void {
     w.transcriptOffset = 0;
     w.turns = 0;
     w.recentTools = [];
+    w.openCalls = [];
   }
+  w.fileSize = size;
   if (size <= w.transcriptOffset) return;
 
   let fd: number;
@@ -458,10 +486,31 @@ function updateFromTranscript(w: Watched, file: string): void {
       try {
         const entry = JSON.parse(line);
         const m = entry?.message;
+        if (m?.role === "toolResult") {
+          w.openCalls = w.openCalls.filter((o) => o.id !== m.toolCallId);
+          continue;
+        }
         if (m?.role !== "assistant") continue;
         w.turns++;
         for (const c of m.content ?? []) {
           if (c?.type !== "toolCall") continue;
+          const cmd = typeof c.arguments?.command === "string" ? c.arguments.command : undefined;
+          let full = cmd;
+          if (full === undefined) {
+            try {
+              full = JSON.stringify(c.arguments ?? {});
+            } catch {
+              full = "{…}";
+            }
+          }
+          const ts = Date.parse(entry?.timestamp);
+          w.openCalls.push({
+            id: String(c.id ?? ""),
+            name: String(c.name ?? "tool"),
+            startedAt: Number.isFinite(ts) ? ts : Date.now(),
+            command: full.slice(0, 200),
+          });
+          if (w.openCalls.length > 100) w.openCalls.shift();
           let args = "";
           try {
             args = JSON.stringify(c.arguments ?? {});
@@ -479,6 +528,33 @@ function updateFromTranscript(w: Watched, file: string): void {
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * Record progress: anything that moved since the last look (transcript size,
+ * tool uses, token total) resets the stall clock and re-arms the stall alert.
+ */
+export function trackProgress(w: Watched, v: Vitals, now: number): void {
+  const sig = `${w.fileSize}|${v.toolUses}|${v.tokens}`;
+  if (w.lastProgressAt === undefined || sig !== w.progressSig) {
+    w.lastProgressAt = now;
+    delete w.alertedAt.stallMinutes;
+  }
+  w.progressSig = sig;
+}
+
+/** Stall breach, once per stall. Not subject to cooldowns. */
+export function dueStall(w: Watched, cfg: WatchdogConfig, now: number): Breach[] {
+  const t = cfg.signals.stallMinutes;
+  if (t == null || t <= 0 || w.lastProgressAt === undefined) return [];
+  if (w.alertedAt.stallMinutes !== undefined) return [];
+  const idle = (now - w.lastProgressAt) / 60_000;
+  return idle >= t ? [{ name: "stallMinutes", value: idle, threshold: t }] : [];
+}
+
+export function inFlightOf(w: Watched, now: number): PendingCheckIn["inFlight"] {
+  const o = w.openCalls[w.openCalls.length - 1];
+  return o ? { name: o.name, runningMinutes: Math.max(0, (now - o.startedAt) / 60_000), command: o.command } : null;
 }
 
 function readVitals(w: Watched, rec: SubagentRecord): Vitals {
@@ -558,7 +634,7 @@ function fmtUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-function fmtSignal(b: Breach): string {
+export function fmtSignal(b: Breach): string {
   switch (b.name) {
     case "tokens":
       return `tokens ${fmtTokens(b.value)} ≥ ${fmtTokens(b.threshold)}`;
@@ -566,6 +642,8 @@ function fmtSignal(b: Breach): string {
       return `cost ${fmtUsd(b.value)} ≥ ${fmtUsd(b.threshold)}`;
     case "contextPercent":
       return `context ${Math.round(b.value)}% ≥ ${b.threshold}%`;
+    case "stallMinutes":
+      return `stalled: no progress for ${Math.floor(b.value)} min`;
     case "minutes":
       return `elapsed ${b.value.toFixed(1)}m ≥ ${b.threshold}m`;
     default:
@@ -608,7 +686,17 @@ function modelLine(rec: SubagentRecord): string | undefined {
  * orchestrator doesn't have to re-derive them from raw vitals on every wake.
  * Both were observed and manually diagnosed during live testing (2026-09-19).
  */
-function adviceLines(w: Watched, v: Vitals, breaches: Breach[]): string[] {
+export function adviceLines(w: Watched, v: Vitals, breaches: Breach[]): string[] {
+  if (breaches.some((b) => b.name === "stallMinutes")) {
+    return [
+      `If a tool call looks hung, kill the hung child process, not the subagent: ` +
+        `pgrep -fl '<distinctive fragment of the command>', then kill <pids>. ` +
+        `The tool call returns an error and the subagent keeps its work.`,
+      `Then steer_subagent to say what you killed and that it must not rerun the command. ` +
+        `A steer alone is not delivered until the tool call ends.`,
+      `If it is a legitimate long run (a lake query, a test suite, a build), leave it alone.`,
+    ];
+  }
   // Wedged-first-tool signature: nothing has completed and the transcript is
   // still empty (its write stream lags), so turns/recent-tools read as zero.
   if (v.toolUses === 0 && w.turns === 0) {
@@ -634,7 +722,7 @@ function adviceLines(w: Watched, v: Vitals, breaches: Breach[]): string[] {
   return [];
 }
 
-function snapshotCheckIn(
+export function snapshotCheckIn(
   w: Watched,
   rec: SubagentRecord,
   v: Vitals,
@@ -653,12 +741,13 @@ function snapshotCheckIn(
     breaches: breaches.map((b) => ({ ...b })),
     advice: adviceLines(w, v, breaches),
     recentTools: [...w.recentTools],
+    inFlight: breaches.some((b) => b.name === "stallMinutes") ? inFlightOf(w, Date.now()) : undefined,
     reason,
   };
 }
 
 /** Compact LLM-facing message; the complete structured record lives in a non-context audit entry. */
-function checkInMessage(
+export function checkInMessage(
   items: PendingCheckIn[],
   mode: "guide" | "strict",
   turnExtensionAvailable: boolean,
@@ -675,6 +764,13 @@ function checkInMessage(
     lines.push(
       `- #${item.checkInNumber ?? "?"} "${item.handle}" (${identity}) — "${task}": ${reason}; ${vitalsLine(item.vitals)}.`,
     );
+    if (item.inFlight !== undefined) {
+      lines.push(
+        item.inFlight
+          ? `  in flight: ${item.inFlight.name} for ${item.inFlight.runningMinutes.toFixed(1)} min: ${item.inFlight.command}`
+          : `  no tool call in flight; the model may be generating, or the run is wedged`,
+      );
+    }
     if (item.recentTools.length > 0) {
       lines.push(`  recent: ${item.recentTools.slice(-2).join(" | ")}`);
     }
@@ -890,7 +986,9 @@ export default function (pi: ExtensionAPI) {
   function scheduleBatchFlush() {
     if (batchTimer || pendingCheckIns.size === 0) return;
     const sinceLastWake = Date.now() - lastGlobalWakeAt;
-    const globalDelay = lastGlobalWakeAt === 0 ? 0 : Math.max(0, cfg.globalCooldownMs - sinceLastWake);
+    // A stall is never held back by the fleet cooldown: a late alert is the bug.
+    const hasStall = [...pendingCheckIns.values()].some((p) => p.breaches.some((x) => x.name === "stallMinutes"));
+    const globalDelay = lastGlobalWakeAt === 0 || hasStall ? 0 : Math.max(0, cfg.globalCooldownMs - sinceLastWake);
     batchTimer = setTimeout(flushCheckInBatch, Math.max(cfg.batchWindowMs, globalDelay));
   }
 
@@ -982,7 +1080,8 @@ export default function (pi: ExtensionAPI) {
 
     let delivery: "notify-only" | "queued" | "merged-queued" | "suppressed-cap" = "notify-only";
     let item = snapshotCheckIn(w, rec, v, breaches, null);
-    item.capExempt = cfg.mode === "guide" && newlyCrossedSignal;
+    // A stall fires once per stall, so it is exempt from the cap in any mode.
+    item.capExempt = (cfg.mode === "guide" && newlyCrossedSignal) || breaches.some((b) => b.name === "stallMinutes");
     if (cfg.action === "wake") {
       const pending = pendingCheckIns.get(w.id);
       const capReached = w.automaticWakeCount >= cfg.maxCheckInsPerAgent;
@@ -996,6 +1095,7 @@ export default function (pi: ExtensionAPI) {
           ...item,
           breaches: [...mergedBreaches.values()],
           advice: [...new Set([...pending.advice, ...item.advice])],
+          inFlight: item.inFlight ?? pending.inFlight,
           reason: pending.reason ?? item.reason,
           capExempt: pending.capExempt || item.capExempt,
         };
@@ -1013,6 +1113,12 @@ export default function (pi: ExtensionAPI) {
         delivery = "queued";
         scheduleBatchFlush();
       }
+    }
+    // A batch timer set under the fleet cooldown must not delay a stall.
+    if (batchTimer && breaches.some((b) => b.name === "stallMinutes") && pendingCheckIns.has(w.id)) {
+      clearTimeout(batchTimer);
+      batchTimer = undefined;
+      scheduleBatchFlush();
     }
     appendAudit("breach", { delivery, checkIn: item });
 
@@ -1046,6 +1152,8 @@ export default function (pi: ExtensionAPI) {
       }
       if (rec.outputFile) updateFromTranscript(w, rec.outputFile);
       const v = readVitals(w, rec);
+      const now = Date.now();
+      trackProgress(w, v, now);
 
       // Model policy is a post-spawn invariant, not the primary gate: the
       // manager should force the model before launch, while this catches a
@@ -1103,8 +1211,9 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      if (Date.now() - w.lastWakeAt < cfg.cooldownMs) continue;
-      const breaches = dueBreaches(w, v, cfg);
+      // Stall ignores the cooldowns: it fires once per stall, and a late alert is the bug.
+      const cooling = Date.now() - w.lastWakeAt < cfg.cooldownMs;
+      const breaches = [...(cooling ? [] : dueBreaches(w, v, cfg)), ...dueStall(w, cfg, now)];
       if (breaches.length > 0) wake(w, rec, v, breaches);
     }
     checkBudgets();
@@ -1482,6 +1591,7 @@ export default function (pi: ExtensionAPI) {
       `    minutes          wall-clock since spawn — the only signal that catches a wedged tool`,
       `    compactions      child auto-compactions (≥1 on a small task is a red flag)`,
       `    costUsd          lifetime USD spend of one agent (default off)`,
+      `    stallMinutes     minutes with no progress (no transcript growth, tool-use or token change); one check-in per stall, never kills (default off)`,
       `  models           { required, onViolation, unknownGraceMs } — exact live-model invariant`,
       `  budget           { sessionUsd, dailyUsd, ledgerDir } — spend warnings only (never stops agents)`,
       `  hardStop         { enabled, tokens, minutes, costUsd } — automatic abort, outcome reported from the RPC reply`,

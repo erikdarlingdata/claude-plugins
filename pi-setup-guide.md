@@ -784,6 +784,11 @@ A dollar check-in: set `signals.costUsd` (for example `10`) in
 `subagent-watchdog.json` to wake the parent when one subagent run passes that
 cost. Opus lanes can reach $10–15 a run.
 
+A stall check-in: set `signals.stallMinutes` (for example `5`) to wake the parent
+when a subagent makes no progress for that long, such as one hung bash call. The
+check-in names the tool call in flight. Kill the hung child process, not the
+subagent, then steer it. Nothing is killed for you.
+
 If your OpenRouter key has a monthly budget, a small extension can watch it.
 Poll `GET https://openrouter.ai/api/v1/key` every 15 minutes and read
 `data.effective_budget` (`limit_usd`, `spend_usd`, `remaining_usd`,
@@ -816,6 +821,7 @@ Cost controls. All are off until you set a value:
 | Setting | Effect |
 | --- | --- |
 | `signals.costUsd` | Check-in when one agent's spend passes the amount |
+| `signals.stallMinutes` | Check-in when one agent makes no progress for this many minutes (default off) |
 | `hardStop.costUsd` | Stop one agent at the amount (needs `hardStop.enabled`) |
 | `budget.sessionUsd` | Warn the parent each time this session's subagent spend passes 1×, 2×, 3× the amount |
 | `budget.dailyUsd` | Same, for today's (UTC) spend across every pi session, read from the ledger |
