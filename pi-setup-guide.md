@@ -411,7 +411,13 @@ run. `pi-mcp-adapter` is an alternative. If you keep it, add `-builtin:mcp` to
 `extensions` in `settings.json` so two MCP stacks do not run.
 
 Pi also ships `codemode` and `tool_search` built-in extensions. See
-`docs/codemode.md` in the Pi docs (section 11).
+`docs/codemode.md` in the Pi docs (section 11). A codemode script calls an MCP
+tool as `tools.mcp__<server>__<tool>(args)`, with hyphens changed to
+underscores. A failed call throws, and the script ends with `return`.
+
+`tool_search` can load built-in MCP tools by name. So to keep MCP away from a
+subagent, block `codemode`, `mcp__*` and the three MCP resource tools in its
+`disallowed_tools`, as the guardrails lane does.
 
 If you use pi-memory with pi-subagents, keep pi-memory out of subagents. Add
 `exclude_extensions: [pi-memory]` to each agent file in `~/.pi/agent/agents/`
