@@ -92,7 +92,8 @@ Copy [`agents/lane.md`](agents/lane.md) to `~/.pi/agent/agents/lane.md` and disp
   the PR body.
 - **No fan-out:** `disallowed_tools` removes spawning, workflow, fusion, background, messaging and MCP tools, so a
   lane can't fan out or reach production on its own. Add your own production-facing tools to that list. Unknown
-  names are harmless.
+  names are harmless. Entries can use `*` patterns. The list blocks `codemode`, `mcp__*` and the three MCP resource
+  tools, because `tool_search` can load pi's built-in MCP tools by name.
 
 ## Measuring agents: agent-report
 
