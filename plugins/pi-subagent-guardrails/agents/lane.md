@@ -5,7 +5,7 @@ model: openrouter/~anthropic/claude-sonnet-latest
 isolation: worktree
 max_turns: 160
 extensions: ["*", "~/.pi/agent/git/github.com/erikdarlingdata/claude-plugins/plugins/pi-subagent-guardrails/subagent-extensions/context-wall.ts"]
-disallowed_tools: Agent, SubagentWorkflow, subagent, get_subagent_result, steer_subagent, extend_subagent, subagent_vitals, bg_delegate, bg_run, fusion_reason, fusion_investigate, fusion_research, fusion_validate, pi_messenger, intercom, mcp, mcpScript
+disallowed_tools: Agent, SubagentWorkflow, subagent, get_subagent_result, steer_subagent, extend_subagent, subagent_vitals, bg_delegate, bg_run, fusion_reason, fusion_investigate, fusion_research, fusion_validate, pi_messenger, intercom, mcp, mcpScript, codemode, mcp__*, list_mcp_resources, list_mcp_resource_templates, read_mcp_resource
 ---
 
 # Lane agent
